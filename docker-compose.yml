@@ -1,0 +1,47 @@
+services:
+  llm:
+    image: vllm/vllm-openai:latest
+    container_name: debate-llm
+    command: >
+      --model ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      --served-model-name ${MODEL_NAME:-gpt-5.4}
+      --host 0.0.0.0
+      --port 8317
+      --api-key ${OPENAI_API_KEY:-sk-local}
+      --max-model-len 8192
+    ports:
+      - "8317:8317"
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    ipc: host
+    shm_size: "8gb"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: debate-backend
+    environment:
+      OPENAI_BASE_URL: http://llm:8317/v1
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-local}
+      DEFAULT_MODEL_NAME: ${MODEL_NAME:-gpt-5.4}
+      REQUEST_TIMEOUT: "180"
+      CORS_ORIGINS: "*"
+    depends_on:
+      - llm
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: debate-frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+    restart: unless-stopped
+
+volumes:
+  vllm_cache:

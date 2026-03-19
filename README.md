@@ -1,3 +1,63 @@
+## san-agent-bianlun
+
+基于 FastAPI + React + OpenAI 兼容接口的本地三智能体辩论系统。
+
+核心能力：
+
+- 正方（B）与反方（C）按轮次流式辩论
+- 裁判（A）每轮小结 + 最终判决（胜方、维度评分、详细理由）
+- 前端三栏实时展示（反方 / 裁判 / 正方）
+
+### 快速开始（本地开发）
+
+1) 配置环境
+
+```bash
+cp .env.local.example .env.local
+```
+
+编辑 `.env.local`：
+
+```env
+OPENAI_BASE_URL=http://127.0.0.1:8317/v1
+OPENAI_API_KEY=your-api-key
+DEFAULT_MODEL_NAME=gpt-5.4
+```
+
+2) 一键启动前后端
+
+```bash
+./start_local_dev.sh --install
+```
+
+后续可直接：
+
+```bash
+./start_local_dev.sh
+```
+
+3) 访问
+
+- 前端：`http://127.0.0.1:5173`
+- 后端：`http://127.0.0.1:8000`
+
+### API
+
+- `POST /debate`：一次性返回完整结果
+- `POST /debate/stream`：NDJSON 流式返回轮次和裁判事件
+
+请求体：
+
+```json
+{
+  "topic": "AI 是否会在未来 10 年大规模替代人类工作？",
+  "rounds": 3,
+  "model_name": "gpt-5.4"
+}
+```
+
+---
+
 <div align="center">
   <img src="imgs/logo2.png" alt="Logo" width="200">
 </div>
@@ -49,8 +109,14 @@ JOIN US on this journey of exploring the interaction and debating capability wit
   ```shell
   pip3 install -r requirements.txt
   ```
-* Set your openai API_KEY in `debate4tran.sh`
-* Set your openai API_KEY in `interactive.py`
+* Export your API config (OpenAI or OpenAI-compatible providers):
+
+  ```shell
+  export OPENAI_API_KEY="your-api-key"
+  export OPENAI_API_BASE="https://your-compatible-endpoint/v1"  # Optional, default OpenAI
+  export MAD_MODEL="your-model-name"                              # e.g. gpt-3.5-turbo / qwen-max / deepseek-chat
+  export MAD_MAX_CONTEXT="3900"                                   # Optional context window override
+  ```
 
 **Run MAD**
 
@@ -65,6 +131,14 @@ If you just want to have a try, you can try the interactive script on your PC.
 ```shell
 python3 interactive.py
 ```
+
+**Run Web GUI (Local)**
+
+```shell
+python3 webui.py --host 127.0.0.1 --port 7860
+```
+
+Then open `http://127.0.0.1:7860` in your browser.
 
 Or simply try our demo for translation [here](https://3a3262e6a138888bd4.gradio.live/).
 
@@ -198,7 +272,4 @@ Given the Chinese sentence "他从后门搞到了不少名酒。", please provid
   year={2023}
 }
 ```
-
-
-
 

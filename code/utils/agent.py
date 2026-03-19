@@ -1,15 +1,20 @@
 import openai
 import backoff
 import time
-import random
 from openai.error import RateLimitError, APIError, ServiceUnavailableError, APIConnectionError
 from .openai_utils import OutOfQuotaException, AccessTerminatedException
-from .openai_utils import num_tokens_from_string, model2max_context
-
-support_models = ['gpt-3.5-turbo', 'gpt-3.5-turbo-0301', 'gpt-4', 'gpt-4-0314']
+from .openai_utils import num_tokens_from_string, get_model_max_context
 
 class Agent:
-    def __init__(self, model_name: str, name: str, temperature: float, sleep_time: float=0) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        name: str,
+        temperature: float,
+        sleep_time: float = 0,
+        api_base: str = None,
+        max_context: int = None,
+    ) -> None:
         """Create an agent
 
         Args:
@@ -17,12 +22,16 @@ class Agent:
             name (str): name of this agent
             temperature (float): higher values make the output more random, while lower values make it more focused and deterministic
             sleep_time (float): sleep because of rate limits
+            api_base (str): OpenAI-compatible API base URL
+            max_context (int): model context window override for unknown models
         """
         self.model_name = model_name
         self.name = name
         self.temperature = temperature
         self.memory_lst = []
         self.sleep_time = sleep_time
+        self.api_base = api_base
+        self.max_context = max_context
 
     @backoff.on_exception(backoff.expo, (RateLimitError, APIError, ServiceUnavailableError, APIConnectionError), max_tries=20)
     def query(self, messages: "list[dict]", max_tokens: int, api_key: str, temperature: float) -> str:
@@ -42,23 +51,25 @@ class Agent:
             str: the return msg
         """
         time.sleep(self.sleep_time)
-        assert self.model_name in support_models, f"Not support {self.model_name}. Choices: {support_models}"
         try:
-            if self.model_name in support_models:
-                response = openai.ChatCompletion.create(
-                    model=self.model_name,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    api_key=api_key,
-                )
-                gen = response['choices'][0]['message']['content']
+            if self.api_base:
+                openai.api_base = self.api_base
+
+            response = openai.ChatCompletion.create(
+                model=self.model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                api_key=api_key,
+            )
+            gen = response['choices'][0]['message']['content']
             return gen
 
         except RateLimitError as e:
-            if "You exceeded your current quota, please check your plan and billing details" in e.user_message:
+            error_msg = getattr(e, "user_message", None) or str(e)
+            if "You exceeded your current quota, please check your plan and billing details" in error_msg:
                 raise OutOfQuotaException(api_key)
-            elif "Your access was terminated due to violation of our policies" in e.user_message:
+            elif "Your access was terminated due to violation of our policies" in error_msg:
                 raise AccessTerminatedException(api_key)
             else:
                 raise e
@@ -95,6 +106,6 @@ class Agent:
         """
         # query
         num_context_token = sum([num_tokens_from_string(m["content"], self.model_name) for m in self.memory_lst])
-        max_token = model2max_context[self.model_name] - num_context_token
+        max_context = get_model_max_context(self.model_name, self.max_context)
+        max_token = max(1, max_context - num_context_token)
         return self.query(self.memory_lst, max_token, api_key=self.openai_api_key, temperature=temperature if temperature else self.temperature)
-

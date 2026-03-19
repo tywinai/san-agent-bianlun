@@ -35,7 +35,16 @@ NAME_LIST=[
 ]
 
 class DebatePlayer(Agent):
-    def __init__(self, model_name: str, name: str, temperature:float, openai_api_key: str, sleep_time: float) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        name: str,
+        temperature: float,
+        openai_api_key: str,
+        sleep_time: float,
+        openai_api_base: str = None,
+        max_context: int = None,
+    ) -> None:
         """Create a player in the debate
 
         Args:
@@ -45,7 +54,14 @@ class DebatePlayer(Agent):
             openai_api_key (str): As the parameter name suggests
             sleep_time (float): sleep because of rate limits
         """
-        super(DebatePlayer, self).__init__(model_name, name, temperature, sleep_time)
+        super(DebatePlayer, self).__init__(
+            model_name,
+            name,
+            temperature,
+            sleep_time,
+            api_base=openai_api_base,
+            max_context=max_context,
+        )
         self.openai_api_key = openai_api_key
 
 
@@ -56,9 +72,11 @@ class Debate:
             num_players: int=3, 
             save_file_dir: str=None,
             openai_api_key: str=None,
+            openai_api_base: str=None,
             prompts_path: str=None,
             max_round: int=3,
-            sleep_time: float=0
+            sleep_time: float=0,
+            max_context: int=None,
         ) -> None:
         """Create a debate
 
@@ -78,8 +96,10 @@ class Debate:
         self.num_players = num_players
         self.save_file_dir = save_file_dir
         self.openai_api_key = openai_api_key
+        self.openai_api_base = openai_api_base
         self.max_round = max_round
         self.sleep_time = sleep_time
+        self.max_context = max_context
 
         # init save file
         now = datetime.now()
@@ -134,7 +154,16 @@ class Debate:
     def creat_agents(self):
         # creates players
         self.players = [
-            DebatePlayer(model_name=self.model_name, name=name, temperature=self.temperature, openai_api_key=self.openai_api_key, sleep_time=self.sleep_time) for name in NAME_LIST
+            DebatePlayer(
+                model_name=self.model_name,
+                name=name,
+                temperature=self.temperature,
+                openai_api_key=self.openai_api_key,
+                sleep_time=self.sleep_time,
+                openai_api_base=self.openai_api_base,
+                max_context=self.max_context,
+            )
+            for name in NAME_LIST
         ]
         self.affirmative = self.players[0]
         self.negative = self.players[1]
@@ -235,7 +264,15 @@ class Debate:
 
         # ultimate deadly technique.
         else:
-            judge_player = DebatePlayer(model_name=self.model_name, name='Judge', temperature=self.temperature, openai_api_key=self.openai_api_key, sleep_time=self.sleep_time)
+            judge_player = DebatePlayer(
+                model_name=self.model_name,
+                name='Judge',
+                temperature=self.temperature,
+                openai_api_key=self.openai_api_key,
+                sleep_time=self.sleep_time,
+                openai_api_base=self.openai_api_base,
+                max_context=self.max_context,
+            )
             aff_ans = self.affirmative.memory_lst[2]['content']
             neg_ans = self.negative.memory_lst[2]['content']
 
@@ -269,7 +306,9 @@ def parse_args():
     parser.add_argument("-o", "--output-dir", type=str, required=True, help="Output file dir")
     parser.add_argument("-lp", "--lang-pair", type=str, required=True, help="Language pair")
     parser.add_argument("-k", "--api-key", type=str, required=True, help="OpenAI api key")
-    parser.add_argument("-m", "--model-name", type=str, default="gpt-3.5-turbo", help="Model name")
+    parser.add_argument("-m", "--model-name", type=str, default=os.getenv("MAD_MODEL", "gpt-3.5-turbo"), help="Model name")
+    parser.add_argument("-b", "--api-base", type=str, default=os.getenv("OPENAI_API_BASE", ""), help="OpenAI-compatible API base URL")
+    parser.add_argument("--max-context", type=int, default=int(os.getenv("MAD_MAX_CONTEXT", "3900")), help="Model context window")
     parser.add_argument("-t", "--temperature", type=float, default=0, help="Sampling temperature")
 
     return parser.parse_args()
@@ -310,7 +349,16 @@ if __name__ == "__main__":
         with open(prompts_path, 'w') as file:
             json.dump(config, file, ensure_ascii=False, indent=4)
 
-        debate = Debate(save_file_dir=save_file_dir, num_players=3, openai_api_key=openai_api_key, prompts_path=prompts_path, temperature=0, sleep_time=0)
+        debate = Debate(
+            model_name=args.model_name,
+            save_file_dir=save_file_dir,
+            num_players=3,
+            openai_api_key=openai_api_key,
+            openai_api_base=args.api_base if args.api_base else None,
+            prompts_path=prompts_path,
+            temperature=args.temperature,
+            sleep_time=0,
+            max_context=args.max_context,
+        )
         debate.run()
         debate.save_file_to_json(id)
-
