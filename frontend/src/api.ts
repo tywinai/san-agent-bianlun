@@ -1,6 +1,6 @@
 import axios from "axios";
 
-import type { DebateRequest, DebateResponse, DebateStreamEvent } from "./types";
+import type { DebateRequest, DebateResponse, DebateStreamEvent, TTSRole } from "./types";
 
 const http = axios.create({
   baseURL: "/api",
@@ -79,4 +79,21 @@ export async function startDebateStream(
       return;
     }
   }
+}
+
+export async function fetchTtsAudio(role: TTSRole, text: string): Promise<Blob> {
+  const response = await fetch("/api/tts", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ role, text })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `TTS HTTP ${response.status}`);
+  }
+
+  return response.blob();
 }

@@ -27,3 +27,8 @@ class DebateResponse(BaseModel):
     model_name: str
     transcript: List[DebateRound]
     judge: JudgeResult
+
+
+class TTSRequest(BaseModel):
+    role: Literal["judge", "affirmative", "negative"]
+    text: str = Field(..., min_length=1, max_length=3000)

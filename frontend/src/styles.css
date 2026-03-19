@@ -112,6 +112,25 @@ body {
   min-width: 300px;
 }
 
+.ttsToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 8px;
+  border: 1px solid #d8e0f0;
+  border-radius: 10px;
+  background: #f2f5fc;
+  font-family: Inter, sans-serif;
+  font-size: 12px;
+  color: #44506a;
+  white-space: nowrap;
+}
+
+.ttsToggle input {
+  accent-color: #2b5bb5;
+}
+
 .controlItem label {
   display: block;
   font-family: Inter, sans-serif;
@@ -182,6 +201,33 @@ body {
 .error {
   margin: 0 0 12px;
   color: #93000a;
+  font-weight: 600;
+}
+
+.audioUnlockBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid #f3d08d;
+  background: #fff8e8;
+  color: #7a4b00;
+  font-family: Inter, sans-serif;
+  font-size: 13px;
+}
+
+.unlockBtn {
+  border: 0;
+  border-radius: 8px;
+  background: #d97706;
+  color: #fff;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-family: Inter, sans-serif;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -624,6 +670,10 @@ pre {
     flex: 1;
     min-width: 180px;
     justify-content: flex-start;
+  }
+
+  .ttsToggle {
+    min-width: 110px;
   }
 
   .dockActionRow {

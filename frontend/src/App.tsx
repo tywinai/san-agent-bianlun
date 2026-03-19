@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { startDebateStream } from "./api";
+import { fetchTtsAudio, startDebateStream } from "./api";
 import type {
   DebateResponse,
   DebateRound,
   DebateStreamEvent,
   JudgeResult,
-  RoundJudgeSummary
+  RoundJudgeSummary,
+  TTSRole
 } from "./types";
 import "./styles.css";
 
@@ -38,10 +39,17 @@ export default function App() {
   const [error, setError] = useState("");
   const [activeSpeaker, setActiveSpeaker] = useState<"B" | "C" | null>(null);
   const [activeRound, setActiveRound] = useState<number | null>(null);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [audioNeedsUnlock, setAudioNeedsUnlock] = useState(false);
 
   const negativeBodyRef = useRef<HTMLDivElement | null>(null);
   const affirmativeBodyRef = useRef<HTMLDivElement | null>(null);
   const judgeBodyRef = useRef<HTMLDivElement | null>(null);
+  const audioQueueRef = useRef<Array<{ role: TTSRole; text: string }>>([]);
+  const isSpeakingRef = useRef(false);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const eventQueueRef = useRef<DebateStreamEvent[]>([]);
+  const isProcessingEventsRef = useRef(false);
 
   const roundNumbers = useMemo(() => {
     const fromLive = Object.keys(liveRounds).map(Number);
@@ -208,7 +216,88 @@ export default function App() {
     return "...";
   };
 
-  const applyStreamEvent = (event: DebateStreamEvent) => {
+  const stopAudioPlayback = () => {
+    audioQueueRef.current = [];
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.currentTime = 0;
+      currentAudioRef.current = null;
+    }
+    isSpeakingRef.current = false;
+  };
+
+  const playQueue = async () => {
+    if (!ttsEnabled || isSpeakingRef.current) {
+      return;
+    }
+
+    isSpeakingRef.current = true;
+    try {
+      while (audioQueueRef.current.length > 0 && ttsEnabled) {
+        const item = audioQueueRef.current.shift();
+        if (!item) {
+          continue;
+        }
+
+        try {
+          const blob = await fetchTtsAudio(item.role, item.text.slice(0, 3000));
+          const url = URL.createObjectURL(blob);
+          const playState = await new Promise<"ok" | "blocked">((resolve) => {
+            const audio = new Audio(url);
+            currentAudioRef.current = audio;
+            audio.onended = () => {
+              URL.revokeObjectURL(url);
+              currentAudioRef.current = null;
+              resolve("ok");
+            };
+            audio.onerror = () => {
+              URL.revokeObjectURL(url);
+              currentAudioRef.current = null;
+              resolve("ok");
+            };
+            audio.play().catch(() => {
+              setAudioNeedsUnlock(true);
+              URL.revokeObjectURL(url);
+              currentAudioRef.current = null;
+              resolve("blocked");
+            });
+          });
+
+          if (playState === "blocked") {
+            audioQueueRef.current.unshift(item);
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+    } finally {
+      isSpeakingRef.current = false;
+    }
+  };
+
+  const enqueueSpeech = (role: TTSRole, text: string) => {
+    const cleaned = text.trim();
+    if (!ttsEnabled || !cleaned) {
+      return;
+    }
+    audioQueueRef.current.push({ role, text: cleaned });
+  };
+
+  const playSpeechAndWait = async (role: TTSRole, text: string) => {
+    enqueueSpeech(role, text);
+    await playQueue();
+  };
+
+  const waitForAudioIdle = async () => {
+    while (ttsEnabled && (isSpeakingRef.current || audioQueueRef.current.length > 0)) {
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, 60);
+      });
+    }
+  };
+
+  const applyStreamEvent = async (event: DebateStreamEvent) => {
     if (event.type === "round_start" && event.round) {
       setStatus(`第 ${event.round} 轮开始`);
       setActiveRound(event.round);
@@ -238,6 +327,16 @@ export default function App() {
       return;
     }
 
+    if (event.type === "turn_end" && event.speaker && event.text) {
+      await waitForAudioIdle();
+      if (event.speaker === "B") {
+        await playSpeechAndWait("affirmative", event.text);
+      } else if (event.speaker === "C") {
+        await playSpeechAndWait("negative", event.text);
+      }
+      return;
+    }
+
     if (event.type === "judge_round" && event.round && event.summary) {
       setStatus(`第 ${event.round} 轮裁判小结已生成`);
       setJudgeRoundSummaries((prev) => {
@@ -246,6 +345,8 @@ export default function App() {
           (a, b) => a.round - b.round
         );
       });
+      await waitForAudioIdle();
+      await playSpeechAndWait("judge", `第${event.round}轮小结。${event.summary}`);
       return;
     }
 
@@ -253,6 +354,9 @@ export default function App() {
       setJudge(event.judge);
       setStatus("裁判评审完成");
       setActiveSpeaker(null);
+      const winner = roleLabelMap[event.judge.winner] || event.judge.winner;
+      await waitForAudioIdle();
+      await playSpeechAndWait("judge", `最终判决，胜方是${winner}。${event.judge.reason}`);
       return;
     }
 
@@ -273,7 +377,31 @@ export default function App() {
     if (event.type === "error") {
       setError(event.message || "流式请求失败");
       setStatus("执行失败");
+      stopAudioPlayback();
     }
+  };
+
+  const processEventQueue = async () => {
+    if (isProcessingEventsRef.current) {
+      return;
+    }
+    isProcessingEventsRef.current = true;
+    try {
+      while (eventQueueRef.current.length > 0) {
+        const event = eventQueueRef.current.shift();
+        if (!event) {
+          continue;
+        }
+        await applyStreamEvent(event);
+      }
+    } finally {
+      isProcessingEventsRef.current = false;
+    }
+  };
+
+  const handleIncomingEvent = (event: DebateStreamEvent) => {
+    eventQueueRef.current.push(event);
+    void processEventQueue();
   };
 
   const onSubmit = async () => {
@@ -284,6 +412,9 @@ export default function App() {
     setLiveRounds({});
     setActiveRound(null);
     setActiveSpeaker(null);
+    eventQueueRef.current = [];
+    isProcessingEventsRef.current = false;
+    stopAudioPlayback();
 
     if (!topic.trim()) {
       setError("请输入辩题");
@@ -299,7 +430,7 @@ export default function App() {
         rounds,
         model_name: modelName.trim() || "gpt-5.4"
         },
-        applyStreamEvent
+        handleIncomingEvent
       );
     } catch (err: unknown) {
       const unknownMessage = "请求失败";
@@ -338,6 +469,19 @@ export default function App() {
     judgeBodyRef.current.scrollTo({ top: judgeBodyRef.current.scrollHeight, behavior: "smooth" });
   }, [judgeRoundSummaries, judge]);
 
+  useEffect(() => {
+    if (!ttsEnabled) {
+      stopAudioPlayback();
+    }
+  }, [ttsEnabled]);
+
+  const unlockAudio = () => {
+    setAudioNeedsUnlock(false);
+    if (ttsEnabled) {
+      void playQueue();
+    }
+  };
+
   return (
     <div className="appShell">
       <header className="arenaTop">
@@ -362,9 +506,25 @@ export default function App() {
               onChange={(e) => setRounds(Number(e.target.value))}
             />
           </div>
+          <label className="ttsToggle" htmlFor="tts-toggle">
+            <input
+              id="tts-toggle"
+              type="checkbox"
+              checked={ttsEnabled}
+              onChange={(e) => setTtsEnabled(e.target.checked)}
+            />
+            <span>语音播报</span>
+          </label>
           <div className="statusText">状态：{status}</div>
         </div>
       </header>
+
+      {audioNeedsUnlock ? (
+        <div className="audioUnlockBanner">
+          <span>浏览器已阻止自动播放，点击启用语音播报</span>
+          <button className="unlockBtn" onClick={unlockAudio}>启用音频</button>
+        </div>
+      ) : null}
 
       {error ? <p className="error">{error}</p> : null}
 

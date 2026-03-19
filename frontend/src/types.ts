@@ -44,3 +44,5 @@ export interface RoundJudgeSummary {
   round: number;
   summary: string;
 }
+
+export type TTSRole = "affirmative" | "negative" | "judge";

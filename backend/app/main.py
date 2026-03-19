@@ -4,12 +4,13 @@ from typing import List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic_settings import BaseSettings
 
 from .debate_service import DebateService
 from .llm_client import OpenAICompatClient
-from .schemas import DebateRequest, DebateResponse
+from .schemas import DebateRequest, DebateResponse, TTSRequest
+from .tts_service import TTSService
 
 
 class Settings(BaseSettings):
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
     )
     app.state.llm_client = client
     app.state.debate_service = DebateService(client)
+    app.state.tts_service = TTSService()
     yield
     await client.close()
 
@@ -89,3 +91,12 @@ async def debate_stream(req: DebateRequest):
             yield json.dumps({"type": "error", "message": f"Debate failed: {exc}"}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+
+@app.post("/tts")
+async def tts(req: TTSRequest):
+    try:
+        audio = await app.state.tts_service.synthesize_mp3(role=req.role, text=req.text)
+        return Response(content=audio, media_type="audio/mpeg")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"TTS failed: {exc}") from exc
