@@ -1,6 +1,12 @@
 import axios from "axios";
 
-import type { DebateRequest, DebateResponse, DebateStreamEvent, TTSRole } from "./types";
+import type {
+  AnnotatedTTSResponse,
+  DebateRequest,
+  DebateResponse,
+  DebateStreamEvent,
+  TTSRole
+} from "./types";
 
 const http = axios.create({
   baseURL: "/api",
@@ -96,4 +102,21 @@ export async function fetchTtsAudio(role: TTSRole, text: string): Promise<Blob> 
   }
 
   return response.blob();
+}
+
+export async function fetchAnnotatedTts(role: TTSRole, text: string): Promise<AnnotatedTTSResponse> {
+  const response = await fetch("/api/tts/annotated", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ role, text })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `Annotated TTS HTTP ${response.status}`);
+  }
+
+  return (await response.json()) as AnnotatedTTSResponse;
 }

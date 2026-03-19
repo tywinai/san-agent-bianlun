@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { fetchTtsAudio, startDebateStream } from "./api";
+import { fetchAnnotatedTts, fetchTtsAudio, startDebateStream } from "./api";
 import type {
   DebateResponse,
   DebateRound,
@@ -16,6 +16,30 @@ type LiveRound = {
   c: string;
 };
 
+type AudioQueueItem = {
+  role: TTSRole;
+  text: string;
+  preparedBlob?: Blob;
+  preparedMarks?: Array<{ time: number; text_offset: number; text: string }>;
+  sourceText?: string;
+  segmentStart?: number;
+  segmentEnd?: number;
+  round?: number;
+  speaker?: "B" | "C";
+  judgeRound?: number;
+};
+
+type KaraokeState = {
+  active: boolean;
+  role?: TTSRole;
+  round?: number;
+  speaker?: "B" | "C";
+  judgeRound?: number;
+  sourceText?: string;
+  segmentStart?: number;
+  segmentEnd?: number;
+};
+
 function ensureRound(source: Record<number, LiveRound>, round: number): Record<number, LiveRound> {
   if (source[round]) {
     return source;
@@ -24,6 +48,35 @@ function ensureRound(source: Record<number, LiveRound>, round: number): Record<n
     ...source,
     [round]: { b: "", c: "" }
   };
+}
+
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const binary = atob(base64);
+  const length = binary.length;
+  const bytes = new Uint8Array(length);
+  for (let i = 0; i < length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
+
+function splitSentencesWithRanges(text: string): Array<{ segment: string; start: number; end: number }> {
+  const result: Array<{ segment: string; start: number; end: number }> = [];
+  const regex = /[^。！？!?；;\n]+[。！？!?；;\n]?/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const segment = match[0].trim();
+    if (!segment) {
+      continue;
+    }
+    const start = match.index;
+    const end = match.index + match[0].length;
+    result.push({ segment, start, end });
+  }
+  if (result.length === 0 && text.trim()) {
+    result.push({ segment: text.trim(), start: 0, end: text.length });
+  }
+  return result;
 }
 
 export default function App() {
@@ -41,11 +94,12 @@ export default function App() {
   const [activeRound, setActiveRound] = useState<number | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [audioNeedsUnlock, setAudioNeedsUnlock] = useState(false);
+  const [karaoke, setKaraoke] = useState<KaraokeState>({ active: false });
 
   const negativeBodyRef = useRef<HTMLDivElement | null>(null);
   const affirmativeBodyRef = useRef<HTMLDivElement | null>(null);
   const judgeBodyRef = useRef<HTMLDivElement | null>(null);
-  const audioQueueRef = useRef<Array<{ role: TTSRole; text: string }>>([]);
+  const audioQueueRef = useRef<AudioQueueItem[]>([]);
   const isSpeakingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const eventQueueRef = useRef<DebateStreamEvent[]>([]);
@@ -216,6 +270,30 @@ export default function App() {
     return "...";
   };
 
+  const renderKaraokeText = (text: string): JSX.Element => {
+    if (
+      !karaoke.active ||
+      !karaoke.sourceText ||
+      karaoke.sourceText !== text ||
+      karaoke.segmentStart === undefined ||
+      karaoke.segmentEnd === undefined
+    ) {
+      return <>{text}</>;
+    }
+    const start = Math.max(0, Math.min(karaoke.segmentStart, text.length));
+    const cut = Math.max(start, Math.min(karaoke.segmentEnd, text.length));
+    const before = text.slice(0, start);
+    const spoken = text.slice(start, cut);
+    const pending = text.slice(cut);
+    return (
+      <>
+        <span className="karaokeBefore">{before}</span>
+        <span className="karaokeSpoken">{spoken}</span>
+        <span className="karaokePending">{pending}</span>
+      </>
+    );
+  };
+
   const stopAudioPlayback = () => {
     audioQueueRef.current = [];
     if (currentAudioRef.current) {
@@ -224,6 +302,7 @@ export default function App() {
       currentAudioRef.current = null;
     }
     isSpeakingRef.current = false;
+    setKaraoke({ active: false });
   };
 
   const playQueue = async () => {
@@ -240,25 +319,102 @@ export default function App() {
         }
 
         try {
-          const blob = await fetchTtsAudio(item.role, item.text.slice(0, 3000));
-          const url = URL.createObjectURL(blob);
-          const playState = await new Promise<"ok" | "blocked">((resolve) => {
-            const audio = new Audio(url);
-            currentAudioRef.current = audio;
-            audio.onended = () => {
-              URL.revokeObjectURL(url);
-              currentAudioRef.current = null;
-              resolve("ok");
-            };
+              let blob: Blob | undefined = item.preparedBlob;
+              let marks: Array<{ time: number; text_offset: number; text: string }> =
+                item.preparedMarks || [];
+              if (!blob) {
+                try {
+                  const tts = await fetchAnnotatedTts(item.role, item.text.slice(0, 3000));
+                  blob = base64ToBlob(tts.audio_base64, tts.mime_type || "audio/mpeg");
+                  marks = (tts.marks || []).slice().sort((a, b) => a.time - b.time);
+                } catch {
+                  blob = await fetchTtsAudio(item.role, item.text.slice(0, 3000));
+                  marks = [];
+                }
+              }
+              const url = URL.createObjectURL(blob);
+              const playState = await new Promise<"ok" | "blocked">((resolve) => {
+                const audio = new Audio(url);
+                currentAudioRef.current = audio;
+                let timer: number | null = null;
+                let markIndex = 0;
+
+                const startKaraoke = () => {
+                  setKaraoke({
+                    active: true,
+                    role: item.role,
+                    round: item.round,
+                    speaker: item.speaker,
+                    judgeRound: item.judgeRound,
+                    sourceText: item.sourceText || item.text,
+                    segmentStart: item.segmentStart ?? 0,
+                    segmentEnd: item.segmentEnd ?? (item.sourceText || item.text).length
+                  });
+
+                  timer = window.setInterval(() => {
+                    const now = audio.currentTime;
+                    while (markIndex < marks.length && marks[markIndex].time <= now + 0.02) {
+                      markIndex += 1;
+                    }
+
+                    let nextIndex = 0;
+                    if (markIndex > 0) {
+                      const lastMark = marks[markIndex - 1];
+                      nextIndex = Math.min(lastMark.text_offset + (lastMark.text?.length || 0), item.text.length);
+                    } else if (marks.length === 0) {
+                      const duration = Math.max(audio.duration || 0.4, 0.4);
+                      const progress = Math.min(now / duration, 1);
+                      nextIndex = Math.floor(item.text.length * progress);
+                    }
+
+                    setKaraoke((prev) => {
+                      if (!prev.active || prev.sourceText !== (item.sourceText || item.text)) {
+                        return prev;
+                      }
+                      const absStart = item.segmentStart ?? 0;
+                      const absEnd = item.segmentEnd ?? (item.sourceText || item.text).length;
+                      const absIndex = Math.min(absStart + nextIndex, absEnd);
+                      return { ...prev, segmentEnd: absIndex };
+                    });
+                  }, 40);
+                };
+
+            audio.onplay = startKaraoke;
+                audio.onended = () => {
+                  if (timer !== null) {
+                    window.clearInterval(timer);
+                  }
+                  setKaraoke((prev) => {
+                    if (prev.sourceText !== (item.sourceText || item.text)) {
+                      return { active: false };
+                    }
+                    return {
+                      ...prev,
+                      segmentEnd: item.segmentEnd ?? (item.sourceText || item.text).length,
+                      active: false
+                    };
+                  });
+                  URL.revokeObjectURL(url);
+                  currentAudioRef.current = null;
+                  resolve("ok");
+                };
             audio.onerror = () => {
+                  if (timer !== null) {
+                    window.clearInterval(timer);
+                  }
               URL.revokeObjectURL(url);
               currentAudioRef.current = null;
+              setKaraoke({ active: false });
               resolve("ok");
             };
             audio.play().catch(() => {
+                  if (timer !== null) {
+                    window.clearInterval(timer);
+                  }
               setAudioNeedsUnlock(true);
               URL.revokeObjectURL(url);
               currentAudioRef.current = null;
+              setKaraoke({ active: false });
               resolve("blocked");
             });
           });
@@ -276,17 +432,80 @@ export default function App() {
     }
   };
 
-  const enqueueSpeech = (role: TTSRole, text: string) => {
+  const enqueueSpeech = (
+    role: TTSRole,
+    text: string,
+    meta?: {
+      round?: number;
+      speaker?: "B" | "C";
+      judgeRound?: number;
+      sourceText?: string;
+      segmentStart?: number;
+      segmentEnd?: number;
+    }
+  ) => {
     const cleaned = text.trim();
     if (!ttsEnabled || !cleaned) {
       return;
     }
-    audioQueueRef.current.push({ role, text: cleaned });
+    audioQueueRef.current.push({ role, text: cleaned, ...meta });
   };
 
-  const playSpeechAndWait = async (role: TTSRole, text: string) => {
-    enqueueSpeech(role, text);
+  const playSpeechAndWait = async (
+    role: TTSRole,
+    text: string,
+    meta?: {
+      round?: number;
+      speaker?: "B" | "C";
+      judgeRound?: number;
+      sourceText?: string;
+      segmentStart?: number;
+      segmentEnd?: number;
+    }
+  ) => {
+    enqueueSpeech(role, text, meta);
     await playQueue();
+  };
+
+  const prefetchSpeech = async (
+    role: TTSRole,
+    text: string,
+    meta?: {
+      round?: number;
+      speaker?: "B" | "C";
+      judgeRound?: number;
+      sourceText?: string;
+      segmentStart?: number;
+      segmentEnd?: number;
+    }
+  ): Promise<AudioQueueItem> => {
+    const cleaned = text.trim();
+    const base: AudioQueueItem = { role, text: cleaned, ...meta };
+    if (!ttsEnabled || !cleaned) {
+      return base;
+    }
+    try {
+      const tts = await fetchAnnotatedTts(role, cleaned.slice(0, 3000));
+      return {
+        ...base,
+        preparedBlob: base64ToBlob(tts.audio_base64, tts.mime_type || "audio/mpeg"),
+        preparedMarks: (tts.marks || []).slice().sort((a, b) => a.time - b.time)
+      };
+    } catch {
+      try {
+        const blob = await fetchTtsAudio(role, cleaned.slice(0, 3000));
+        return { ...base, preparedBlob: blob, preparedMarks: [] };
+      } catch {
+        return base;
+      }
+    }
+  };
+
+  const playPrefetchedInOrder = async (items: AudioQueueItem[]) => {
+    for (const item of items) {
+      audioQueueRef.current.push(item);
+      await playQueue();
+    }
   };
 
   const waitForAudioIdle = async () => {
@@ -329,11 +548,20 @@ export default function App() {
 
     if (event.type === "turn_end" && event.speaker && event.text) {
       await waitForAudioIdle();
-      if (event.speaker === "B") {
-        await playSpeechAndWait("affirmative", event.text);
-      } else if (event.speaker === "C") {
-        await playSpeechAndWait("negative", event.text);
-      }
+      const role: TTSRole = event.speaker === "B" ? "affirmative" : "negative";
+      const segments = splitSentencesWithRanges(event.text);
+      const prefetched = await Promise.all(
+        segments.map((seg) =>
+          prefetchSpeech(role, seg.segment, {
+            round: event.round,
+            speaker: event.speaker,
+            sourceText: event.text,
+            segmentStart: seg.start,
+            segmentEnd: seg.end
+          })
+        )
+      );
+      await playPrefetchedInOrder(prefetched);
       return;
     }
 
@@ -346,7 +574,18 @@ export default function App() {
         );
       });
       await waitForAudioIdle();
-      await playSpeechAndWait("judge", `第${event.round}轮小结。${event.summary}`);
+      const judgeSegments = splitSentencesWithRanges(event.summary);
+      const prefetched = await Promise.all(
+        judgeSegments.map((seg) =>
+          prefetchSpeech("judge", seg.segment, {
+            judgeRound: event.round,
+            sourceText: event.summary,
+            segmentStart: seg.start,
+            segmentEnd: seg.end
+          })
+        )
+      );
+      await playPrefetchedInOrder(prefetched);
       return;
     }
 
@@ -356,7 +595,21 @@ export default function App() {
       setActiveSpeaker(null);
       const winner = roleLabelMap[event.judge.winner] || event.judge.winner;
       await waitForAudioIdle();
-      await playSpeechAndWait("judge", `最终判决，胜方是${winner}。${event.judge.reason}`);
+      await playSpeechAndWait("judge", `最终判决，胜方是${winner}。`, {
+        judgeRound: activeRound ?? undefined
+      });
+      const finalSegments = splitSentencesWithRanges(event.judge.reason);
+      const prefetched = await Promise.all(
+        finalSegments.map((seg) =>
+          prefetchSpeech("judge", seg.segment, {
+            judgeRound: activeRound ?? undefined,
+            sourceText: event.judge.reason,
+            segmentStart: seg.start,
+            segmentEnd: seg.end
+          })
+        )
+      );
+      await playPrefetchedInOrder(prefetched);
       return;
     }
 
@@ -475,6 +728,8 @@ export default function App() {
     }
   }, [ttsEnabled]);
 
+  const judgeSpeaking = status.includes("裁判") || status.includes("评审");
+
   const unlockAudio = () => {
     setAudioNeedsUnlock(false);
     if (ttsEnabled) {
@@ -532,7 +787,7 @@ export default function App() {
         <section className="column negative">
           <div className="columnHeader richHeader">
             <div className="identity">
-              <div className="avatar negativeAvatar">C</div>
+              <div className={`avatar negativeAvatar ${activeSpeaker === "C" ? "activeAvatar" : ""}`}>C</div>
               <div>
                 <h2>AI Negative</h2>
                 <p>反方</p>
@@ -555,8 +810,12 @@ export default function App() {
                   className={`bubble bubbleNegative ${active ? "activeBubble" : ""}`}
                   data-round={roundNo}
                 >
-                  <div className="roundTag">第 {roundNo} 轮</div>
-                  <p>{getRoundText(roundNo, "C") || getRoundFallbackText(roundNo, "C")}</p>
+                  <div className={`roundTag ${active ? "activeRoundTag" : ""}`}>第 {roundNo} 轮</div>
+                  <p>
+                    {getRoundText(roundNo, "C")
+                      ? renderKaraokeText(getRoundText(roundNo, "C"))
+                      : getRoundFallbackText(roundNo, "C")}
+                  </p>
                 </div>
               );
             })}
@@ -566,7 +825,7 @@ export default function App() {
         <section className="column judge">
           <div className="columnHeader richHeader">
             <div className="identity">
-              <div className="avatar judgeAvatar">A</div>
+              <div className={`avatar judgeAvatar ${judgeSpeaking ? "activeAvatar" : ""}`}>A</div>
               <div>
                 <h2>AI Judge</h2>
                 <p>裁判</p>
@@ -581,7 +840,7 @@ export default function App() {
             {judgeRoundSummaries.map((item) => (
               <div key={`judge-round-${item.round}`} className="judgeCard" data-round={item.round}>
                 <div className="roundTag">第 {item.round} 轮小结</div>
-                <p className="judgeReason">{item.summary}</p>
+                <p className="judgeReason">{renderKaraokeText(item.summary)}</p>
               </div>
             ))}
             {judge ? (
@@ -616,7 +875,7 @@ export default function App() {
                     })}
                   </div>
                 ) : null}
-                <p className="judgeReason">{judge.reason}</p>
+                <p className="judgeReason">{renderKaraokeText(judge.reason)}</p>
               </div>
             ) : shouldShowJudgePending ? (
               <div className="judgeCard pending">裁判评审中...</div>
@@ -630,7 +889,7 @@ export default function App() {
         <section className="column affirmative">
           <div className="columnHeader richHeader">
             <div className="identity">
-              <div className="avatar affirmativeAvatar">B</div>
+              <div className={`avatar affirmativeAvatar ${activeSpeaker === "B" ? "activeAvatar" : ""}`}>B</div>
               <div>
                 <h2>AI Affirmative</h2>
                 <p>正方</p>
@@ -653,8 +912,12 @@ export default function App() {
                   className={`bubble bubbleAffirmative ${active ? "activeBubble" : ""}`}
                   data-round={roundNo}
                 >
-                  <div className="roundTag">第 {roundNo} 轮</div>
-                  <p>{getRoundText(roundNo, "B") || getRoundFallbackText(roundNo, "B")}</p>
+                  <div className={`roundTag ${active ? "activeRoundTag" : ""}`}>第 {roundNo} 轮</div>
+                  <p>
+                    {getRoundText(roundNo, "B")
+                      ? renderKaraokeText(getRoundText(roundNo, "B"))
+                      : getRoundFallbackText(roundNo, "B")}
+                  </p>
                 </div>
               );
             })}

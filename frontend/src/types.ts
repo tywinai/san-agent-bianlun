@@ -46,3 +46,15 @@ export interface RoundJudgeSummary {
 }
 
 export type TTSRole = "affirmative" | "negative" | "judge";
+
+export interface TTSMark {
+  time: number;
+  text_offset: number;
+  text: string;
+}
+
+export interface AnnotatedTTSResponse {
+  audio_base64: string;
+  mime_type: string;
+  marks: TTSMark[];
+}

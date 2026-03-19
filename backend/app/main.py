@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings
 
 from .debate_service import DebateService
 from .llm_client import OpenAICompatClient
-from .schemas import DebateRequest, DebateResponse, TTSRequest
+from .schemas import DebateRequest, DebateResponse, TTSAnnotatedResponse, TTSRequest
 from .tts_service import TTSService
 
 
@@ -100,3 +100,11 @@ async def tts(req: TTSRequest):
         return Response(content=audio, media_type="audio/mpeg")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"TTS failed: {exc}") from exc
+
+
+@app.post("/tts/annotated", response_model=TTSAnnotatedResponse)
+async def tts_annotated(req: TTSRequest):
+    try:
+        return await app.state.tts_service.synthesize_with_marks(role=req.role, text=req.text)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Annotated TTS failed: {exc}") from exc

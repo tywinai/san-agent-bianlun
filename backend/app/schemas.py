@@ -32,3 +32,15 @@ class DebateResponse(BaseModel):
 class TTSRequest(BaseModel):
     role: Literal["judge", "affirmative", "negative"]
     text: str = Field(..., min_length=1, max_length=3000)
+
+
+class TTSMark(BaseModel):
+    time: float
+    text_offset: int
+    text: str
+
+
+class TTSAnnotatedResponse(BaseModel):
+    audio_base64: str
+    mime_type: str
+    marks: List[TTSMark]
