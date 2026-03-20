@@ -19,6 +19,7 @@ type LiveRound = {
 type AudioQueueItem = {
   role: TTSRole;
   text: string;
+  target?: "debate" | "judge_summary" | "judge_reason";
   preparedBlob?: Blob;
   preparedMarks?: Array<{ time: number; text_offset: number; text: string }>;
   sourceText?: string;
@@ -87,14 +88,28 @@ export default function App() {
   const [result, setResult] = useState<DebateResponse | null>(null);
   const [liveRounds, setLiveRounds] = useState<Record<number, LiveRound>>({});
   const [judge, setJudge] = useState<JudgeResult | null>(null);
+  const [judgeReasonDisplayed, setJudgeReasonDisplayed] = useState("");
   const [judgeRoundSummaries, setJudgeRoundSummaries] = useState<RoundJudgeSummary[]>([]);
-  const [status, setStatus] = useState("准备就绪");
+  const [statusKey, setStatusKey] = useState<"idle" | "thinking" | "speaking" | "done" | "error">("idle");
+  const [statusRole, setStatusRole] = useState<"A" | "B" | "C" | null>(null);
+  const [statusRound, setStatusRound] = useState<number | null>(null);
+  const [statusLang, setStatusLang] = useState<"zh" | "en">("zh");
   const [error, setError] = useState("");
-  const [activeSpeaker, setActiveSpeaker] = useState<"B" | "C" | null>(null);
+  const [activeSpeaker, setActiveSpeaker] = useState<"B" | "C" | "A" | null>(null);
   const [activeRound, setActiveRound] = useState<number | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [audioNeedsUnlock, setAudioNeedsUnlock] = useState(false);
   const [karaoke, setKaraoke] = useState<KaraokeState>({ active: false });
+
+  const setUiStatus = (
+    key: "idle" | "thinking" | "speaking" | "done" | "error",
+    role: "A" | "B" | "C" | null = null,
+    round: number | null = null
+  ) => {
+    setStatusKey(key);
+    setStatusRole(role);
+    setStatusRound(round);
+  };
 
   const negativeBodyRef = useRef<HTMLDivElement | null>(null);
   const affirmativeBodyRef = useRef<HTMLDivElement | null>(null);
@@ -120,6 +135,21 @@ export default function App() {
     }
     return "Round 1: Opening Statement";
   }, [activeRound, result]);
+
+  const speakingSpeaker = useMemo<"B" | "C" | "A" | null>(() => {
+    if (!karaoke.active || !karaoke.role) {
+      return null;
+    }
+    if (karaoke.role === "affirmative") {
+      return "B";
+    }
+    if (karaoke.role === "negative") {
+      return "C";
+    }
+    return "A";
+  }, [karaoke]);
+
+  const thinkingSpeaker = activeSpeaker && !speakingSpeaker ? activeSpeaker : null;
 
   const latestSummary = useMemo(() => {
     if (judgeRoundSummaries.length === 0) {
@@ -189,7 +219,7 @@ export default function App() {
     !judge &&
     hasDebateStarted &&
     !activeSpeaker &&
-    (status.includes("裁判") || status.includes("评审") || status.includes("完成"));
+    (statusRole === "A" || statusKey === "done");
 
   const shouldShowJudgePlaceholder =
     !judge &&
@@ -197,9 +227,9 @@ export default function App() {
     (judgeRoundSummaries.length === 0 || (activeRound !== null && judgeRoundSummaries.length < activeRound));
 
   const emptyHints = useMemo(() => {
-    const idle = status === "准备就绪";
-    const connecting = status.includes("建立流式连接");
-    const running = loading || status.includes("第 ");
+    const idle = statusKey === "idle";
+    const connecting = statusKey === "thinking" && !activeSpeaker;
+    const running = loading || statusKey === "speaking" || statusKey === "thinking";
 
     if (idle) {
       return {
@@ -237,7 +267,41 @@ export default function App() {
       judge: "暂无裁判内容。",
       affirmative: "暂无正方发言。"
     };
-  }, [status, loading, activeSpeaker]);
+  }, [statusKey, loading, activeSpeaker, statusRound]);
+
+  const statusText = useMemo(() => {
+    const roleMap = statusLang === "zh" ? { A: "裁判", B: "正方", C: "反方" } : { A: "Judge", B: "Affirmative", C: "Negative" };
+    if (statusLang === "zh") {
+      if (statusKey === "idle") {
+        return "idle";
+      }
+      if (statusKey === "error") {
+        return "error";
+      }
+      if (statusKey === "done") {
+        return "done";
+      }
+      if (statusKey === "thinking") {
+        return statusRole ? `thinking · ${roleMap[statusRole]}${statusRound ? ` · 第${statusRound}轮` : ""}` : "thinking";
+      }
+      if (statusKey === "speaking") {
+        return statusRole ? `speaking · ${roleMap[statusRole]}${statusRound ? ` · 第${statusRound}轮` : ""}` : "speaking";
+      }
+    }
+    if (statusKey === "idle") {
+      return "idle";
+    }
+    if (statusKey === "error") {
+      return "error";
+    }
+    if (statusKey === "done") {
+      return "done";
+    }
+    if (statusRole) {
+      return `${statusKey} · ${roleMap[statusRole]}${statusRound ? ` · Round ${statusRound}` : ""}`;
+    }
+    return statusKey;
+  }, [statusKey, statusRole, statusRound, statusLang]);
 
   const getRoundText = (roundNo: number, speaker: "B" | "C"): string => {
     if (result) {
@@ -251,6 +315,39 @@ export default function App() {
       return "";
     }
     return speaker === "B" ? live.b : live.c;
+  };
+
+  const updateSpokenText = (item: AudioQueueItem, absIndex: number) => {
+    const source = item.sourceText || item.text;
+    const cut = Math.max(0, Math.min(absIndex, source.length));
+    const spoken = source.slice(0, cut);
+
+    if (item.target === "debate" && item.speaker && item.round) {
+      setLiveRounds((prev) => {
+        const next = ensureRound(prev, item.round as number);
+        const row = next[item.round as number];
+        if (item.speaker === "B") {
+          return { ...next, [item.round as number]: { ...row, b: spoken } };
+        }
+        return { ...next, [item.round as number]: { ...row, c: spoken } };
+      });
+      return;
+    }
+
+    if (item.target === "judge_summary" && item.judgeRound) {
+      setJudgeRoundSummaries((prev) => {
+        const has = prev.some((x) => x.round === item.judgeRound);
+        if (!has) {
+          return [...prev, { round: item.judgeRound as number, summary: spoken }].sort((a, b) => a.round - b.round);
+        }
+        return prev.map((x) => (x.round === item.judgeRound ? { ...x, summary: spoken } : x));
+      });
+      return;
+    }
+
+    if (item.target === "judge_reason") {
+      setJudgeReasonDisplayed(spoken);
+    }
   };
 
   const getRoundFallbackText = (roundNo: number, speaker: "B" | "C"): string => {
@@ -340,6 +437,13 @@ export default function App() {
                 let markIndex = 0;
 
                 const startKaraoke = () => {
+                  const roleCode: "A" | "B" | "C" | null = item.speaker
+                    ? item.speaker
+                    : item.role === "judge"
+                      ? "A"
+                      : null;
+                  const roundCode = item.round ?? item.judgeRound ?? activeRound;
+                  setUiStatus("speaking", roleCode, roundCode ?? null);
                   setKaraoke({
                     active: true,
                     role: item.role,
@@ -374,6 +478,7 @@ export default function App() {
                       const absStart = item.segmentStart ?? 0;
                       const absEnd = item.segmentEnd ?? (item.sourceText || item.text).length;
                       const absIndex = Math.min(absStart + nextIndex, absEnd);
+                      updateSpokenText(item, absIndex);
                       return { ...prev, segmentEnd: absIndex };
                     });
                   }, 40);
@@ -394,8 +499,15 @@ export default function App() {
                       active: false
                     };
                   });
+                  updateSpokenText(item, item.segmentEnd ?? (item.sourceText || item.text).length);
                   URL.revokeObjectURL(url);
                   currentAudioRef.current = null;
+                  if (audioQueueRef.current.length === 0 && statusKey !== "done" && statusKey !== "error") {
+                    const fallbackRole: "A" | "B" | "C" | null =
+                      activeSpeaker ?? (item.role === "judge" ? "A" : null);
+                    const fallbackRound = item.round ?? item.judgeRound ?? activeRound;
+                    setUiStatus("thinking", fallbackRole, fallbackRound ?? null);
+                  }
                   resolve("ok");
                 };
             audio.onerror = () => {
@@ -436,6 +548,7 @@ export default function App() {
     role: TTSRole,
     text: string,
     meta?: {
+      target?: "debate" | "judge_summary" | "judge_reason";
       round?: number;
       speaker?: "B" | "C";
       judgeRound?: number;
@@ -455,6 +568,7 @@ export default function App() {
     role: TTSRole,
     text: string,
     meta?: {
+      target?: "debate" | "judge_summary" | "judge_reason";
       round?: number;
       speaker?: "B" | "C";
       judgeRound?: number;
@@ -471,6 +585,7 @@ export default function App() {
     role: TTSRole,
     text: string,
     meta?: {
+      target?: "debate" | "judge_summary" | "judge_reason";
       round?: number;
       speaker?: "B" | "C";
       judgeRound?: number;
@@ -518,7 +633,7 @@ export default function App() {
 
   const applyStreamEvent = async (event: DebateStreamEvent) => {
     if (event.type === "round_start" && event.round) {
-      setStatus(`第 ${event.round} 轮开始`);
+      setUiStatus("thinking", "B", event.round);
       setActiveRound(event.round);
       setActiveSpeaker(null);
       setLiveRounds((prev) => ensureRound(prev, event.round as number));
@@ -526,22 +641,15 @@ export default function App() {
     }
 
     if (event.type === "chunk" && event.round && event.speaker && event.delta) {
-      setStatus(`第 ${event.round} 轮 ${event.speaker === "B" ? "正方" : "反方"}发言中...`);
+      setUiStatus("thinking", event.speaker, event.round);
       setActiveRound(event.round);
       setActiveSpeaker(event.speaker);
-      setLiveRounds((prev) => {
-        const next = ensureRound(prev, event.round as number);
-        const row = next[event.round as number];
-        if (event.speaker === "B") {
-          return { ...next, [event.round as number]: { ...row, b: row.b + event.delta } };
-        }
-        return { ...next, [event.round as number]: { ...row, c: row.c + event.delta } };
-      });
+      setLiveRounds((prev) => ensureRound(prev, event.round as number));
       return;
     }
 
     if (event.type === "round_end" && event.round) {
-      setStatus(`第 ${event.round} 轮完成`);
+      setUiStatus("thinking", "A", event.round);
       setActiveSpeaker(null);
       return;
     }
@@ -553,6 +661,7 @@ export default function App() {
       const prefetched = await Promise.all(
         segments.map((seg) =>
           prefetchSpeech(role, seg.segment, {
+            target: "debate",
             round: event.round,
             speaker: event.speaker,
             sourceText: event.text,
@@ -566,10 +675,11 @@ export default function App() {
     }
 
     if (event.type === "judge_round" && event.round && event.summary) {
-      setStatus(`第 ${event.round} 轮裁判小结已生成`);
+      setUiStatus("thinking", "A", event.round);
+      setActiveSpeaker("A");
       setJudgeRoundSummaries((prev) => {
         const filtered = prev.filter((item) => item.round !== event.round);
-        return [...filtered, { round: event.round, summary: event.summary as string }].sort(
+        return [...filtered, { round: event.round, summary: "" }].sort(
           (a, b) => a.round - b.round
         );
       });
@@ -578,6 +688,7 @@ export default function App() {
       const prefetched = await Promise.all(
         judgeSegments.map((seg) =>
           prefetchSpeech("judge", seg.segment, {
+            target: "judge_summary",
             judgeRound: event.round,
             sourceText: event.summary,
             segmentStart: seg.start,
@@ -586,13 +697,15 @@ export default function App() {
         )
       );
       await playPrefetchedInOrder(prefetched);
+      setActiveSpeaker(null);
       return;
     }
 
     if (event.type === "judge" && event.judge) {
-      setJudge(event.judge);
-      setStatus("裁判评审完成");
-      setActiveSpeaker(null);
+      setJudge({ ...event.judge, reason: "" });
+      setJudgeReasonDisplayed("");
+      setUiStatus("thinking", "A", activeRound);
+      setActiveSpeaker("A");
       const winner = roleLabelMap[event.judge.winner] || event.judge.winner;
       await waitForAudioIdle();
       await playSpeechAndWait("judge", `最终判决，胜方是${winner}。`, {
@@ -602,6 +715,7 @@ export default function App() {
       const prefetched = await Promise.all(
         finalSegments.map((seg) =>
           prefetchSpeech("judge", seg.segment, {
+            target: "judge_reason",
             judgeRound: activeRound ?? undefined,
             sourceText: event.judge.reason,
             segmentStart: seg.start,
@@ -610,6 +724,8 @@ export default function App() {
         )
       );
       await playPrefetchedInOrder(prefetched);
+      setJudge(event.judge);
+      setActiveSpeaker(null);
       return;
     }
 
@@ -622,14 +738,14 @@ export default function App() {
         judge: event.judge
       });
       setJudge(event.judge);
-      setStatus("辩论完成");
+      setUiStatus("done", null, activeRound);
       setActiveSpeaker(null);
       return;
     }
 
     if (event.type === "error") {
       setError(event.message || "流式请求失败");
-      setStatus("执行失败");
+      setUiStatus("error");
       stopAudioPlayback();
     }
   };
@@ -661,6 +777,7 @@ export default function App() {
     setError("");
     setResult(null);
     setJudge(null);
+    setJudgeReasonDisplayed("");
     setJudgeRoundSummaries([]);
     setLiveRounds({});
     setActiveRound(null);
@@ -674,8 +791,9 @@ export default function App() {
       return;
     }
 
+    setStatusLang(/[\u4e00-\u9fff]/.test(topic) ? "zh" : "en");
     setLoading(true);
-    setStatus("正在建立流式连接...");
+    setUiStatus("thinking", null, null);
     try {
       await startDebateStream(
         {
@@ -728,7 +846,7 @@ export default function App() {
     }
   }, [ttsEnabled]);
 
-  const judgeSpeaking = status.includes("裁判") || status.includes("评审");
+  const judgeSpeaking = speakingSpeaker === "A";
 
   const unlockAudio = () => {
     setAudioNeedsUnlock(false);
@@ -770,7 +888,7 @@ export default function App() {
             />
             <span>语音播报</span>
           </label>
-          <div className="statusText">状态：{status}</div>
+          <div className="statusText">状态：{statusText}</div>
         </div>
       </header>
 
@@ -787,13 +905,15 @@ export default function App() {
         <section className="column negative">
           <div className="columnHeader richHeader">
             <div className="identity">
-              <div className={`avatar negativeAvatar ${activeSpeaker === "C" ? "activeAvatar" : ""}`}>C</div>
+              <div className={`avatar negativeAvatar ${speakingSpeaker === "C" ? "speakingAvatar" : thinkingSpeaker === "C" ? "thinkingAvatar" : ""}`}>C</div>
               <div>
                 <h2>AI Negative</h2>
                 <p>反方</p>
               </div>
             </div>
-            <div className={`liveDot ${activeSpeaker === "C" ? "active" : ""}`}>thinking</div>
+            <div className={`liveDot ${speakingSpeaker === "C" ? "speaking" : thinkingSpeaker === "C" ? "thinking" : ""}`}>
+              {speakingSpeaker === "C" ? "speaking" : thinkingSpeaker === "C" ? "thinking" : "idle"}
+            </div>
           </div>
           <div
             className="columnBody logicStream"
@@ -803,11 +923,12 @@ export default function App() {
               <div className="emptyState emptyNegative">{emptyHints.negative}</div>
             ) : null}
             {roundNumbers.map((roundNo) => {
-              const active = activeSpeaker === "C" && activeRound === roundNo;
+              const active = (speakingSpeaker === "C" || thinkingSpeaker === "C") && activeRound === roundNo;
+              const speaking = speakingSpeaker === "C" && activeRound === roundNo;
               return (
                 <div
                   key={`c-${roundNo}`}
-                  className={`bubble bubbleNegative ${active ? "activeBubble" : ""}`}
+                  className={`bubble bubbleNegative ${active ? "activeBubble" : ""} ${speaking ? "speakingBubble" : ""}`}
                   data-round={roundNo}
                 >
                   <div className={`roundTag ${active ? "activeRoundTag" : ""}`}>第 {roundNo} 轮</div>
@@ -825,13 +946,15 @@ export default function App() {
         <section className="column judge">
           <div className="columnHeader richHeader">
             <div className="identity">
-              <div className={`avatar judgeAvatar ${judgeSpeaking ? "activeAvatar" : ""}`}>A</div>
+              <div className={`avatar judgeAvatar ${speakingSpeaker === "A" ? "speakingAvatar" : thinkingSpeaker === "A" ? "thinkingAvatar" : ""}`}>A</div>
               <div>
                 <h2>AI Judge</h2>
                 <p>裁判</p>
               </div>
             </div>
-            <div className="liveDot">analysis</div>
+            <div className={`liveDot ${judgeSpeaking ? "speaking" : thinkingSpeaker === "A" ? "thinking" : ""}`}>
+              {judgeSpeaking ? "speaking" : thinkingSpeaker === "A" ? "thinking" : "idle"}
+            </div>
           </div>
           <div
             className="columnBody logicStream"
@@ -875,7 +998,7 @@ export default function App() {
                     })}
                   </div>
                 ) : null}
-                <p className="judgeReason">{renderKaraokeText(judge.reason)}</p>
+                <p className="judgeReason">{renderKaraokeText(judgeReasonDisplayed || judge.reason)}</p>
               </div>
             ) : shouldShowJudgePending ? (
               <div className="judgeCard pending">裁判评审中...</div>
@@ -889,13 +1012,15 @@ export default function App() {
         <section className="column affirmative">
           <div className="columnHeader richHeader">
             <div className="identity">
-              <div className={`avatar affirmativeAvatar ${activeSpeaker === "B" ? "activeAvatar" : ""}`}>B</div>
+              <div className={`avatar affirmativeAvatar ${speakingSpeaker === "B" ? "speakingAvatar" : thinkingSpeaker === "B" ? "thinkingAvatar" : ""}`}>B</div>
               <div>
                 <h2>AI Affirmative</h2>
                 <p>正方</p>
               </div>
             </div>
-            <div className={`liveDot ${activeSpeaker === "B" ? "active" : ""}`}>synthesizing</div>
+            <div className={`liveDot ${speakingSpeaker === "B" ? "speaking" : thinkingSpeaker === "B" ? "thinking" : ""}`}>
+              {speakingSpeaker === "B" ? "speaking" : thinkingSpeaker === "B" ? "thinking" : "idle"}
+            </div>
           </div>
           <div
             className="columnBody logicStream"
@@ -905,11 +1030,12 @@ export default function App() {
               <div className="emptyState emptyAffirmative">{emptyHints.affirmative}</div>
             ) : null}
             {roundNumbers.map((roundNo) => {
-              const active = activeSpeaker === "B" && activeRound === roundNo;
+              const active = (speakingSpeaker === "B" || thinkingSpeaker === "B") && activeRound === roundNo;
+              const speaking = speakingSpeaker === "B" && activeRound === roundNo;
               return (
                 <div
                   key={`b-${roundNo}`}
-                  className={`bubble bubbleAffirmative ${active ? "activeBubble" : ""}`}
+                  className={`bubble bubbleAffirmative ${active ? "activeBubble" : ""} ${speaking ? "speakingBubble" : ""}`}
                   data-round={roundNo}
                 >
                   <div className={`roundTag ${active ? "activeRoundTag" : ""}`}>第 {roundNo} 轮</div>
