@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchAnnotatedTts, fetchTtsAudio, startDebateStream } from "./api";
+import judgeAvatarSrc from "./static/裁判.png";
+import affirmativeAvatarSrc from "./static/正方.png";
+import negativeAvatarSrc from "./static/反方.png";
 import type {
   DebateResponse,
   DebateRound,
@@ -80,7 +83,22 @@ function splitSentencesWithRanges(text: string): Array<{ segment: string; start:
 }
 
 export default function App() {
-  const [topic, setTopic] = useState("What are the pros and cons of using robots in elderly care?");
+  const teachingTopic = "What are the pros and cons of using robots in elderly care?";
+  const teachingPros = [
+    "Robots can monitor health 24/7.",
+    "They are good at doing repetitive tasks.",
+    "They provide safety and convenience.",
+    "They enable old people to get better care.",
+    "They help old people to live safely."
+  ];
+  const teachingCons = [
+    "Robots cannot show real empathy.",
+    "They lack human warmth.",
+    "They fail to understand feelings.",
+    "It's difficult for old people to learn to use robots.",
+    "Robots have trouble understanding old people's feelings."
+  ];
+  const [topic, setTopic] = useState(teachingTopic);
   const [rounds, setRounds] = useState(5);
   const [modelName, setModelName] = useState("gpt-5.4");
   const [loading, setLoading] = useState(false);
@@ -148,6 +166,18 @@ export default function App() {
   }, [karaoke]);
 
   const thinkingSpeaker = activeSpeaker && !speakingSpeaker ? activeSpeaker : null;
+
+  const isTeachingTopic = useMemo(() => {
+    const normalize = (v: string) =>
+      v
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    const t = normalize(topic);
+    const target = normalize(teachingTopic);
+    return t === target || (t.includes("robots") && t.includes("elderly") && t.includes("care"));
+  }, [topic]);
 
   const affirmativeEdge = useMemo(() => {
     if (!judge) {
@@ -335,7 +365,41 @@ export default function App() {
     return "...";
   };
 
-  const renderKaraokeText = (text: string): JSX.Element => {
+  const renderKaraokeText = (text: string, speakerHint?: "B" | "C"): JSX.Element => {
+    const highlightChunk = (chunk: string, speaker: "B" | "C") => {
+      if (!isTeachingTopic || !chunk.trim()) {
+        return chunk;
+      }
+      const refs = (speaker === "B" ? teachingPros : teachingCons).map((s) => s.trim()).filter(Boolean);
+      const escaped = refs.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      if (escaped.length === 0) {
+        return chunk;
+      }
+      const regex = new RegExp(escaped.join("|"), "gi");
+      const out: Array<string | JSX.Element> = [];
+      let last = 0;
+      let match: RegExpExecArray | null;
+      while ((match = regex.exec(chunk)) !== null) {
+        const start = match.index;
+        const end = start + match[0].length;
+        if (start > last) {
+          out.push(chunk.slice(last, start));
+        }
+        out.push(
+          <mark className="coreHighlight" key={`${speaker}-${start}-${end}`}>
+            {chunk.slice(start, end)}
+          </mark>
+        );
+        last = end;
+      }
+      if (last < chunk.length) {
+        out.push(chunk.slice(last));
+      }
+      return out.length > 0 ? out : chunk;
+    };
+
+    const speaker: "B" | "C" = speakerHint || (karaoke.speaker === "C" ? "C" : "B");
+
     if (
       !karaoke.active ||
       !karaoke.sourceText ||
@@ -343,7 +407,7 @@ export default function App() {
       karaoke.segmentStart === undefined ||
       karaoke.segmentEnd === undefined
     ) {
-      return <>{text}</>;
+      return <>{highlightChunk(text, speaker)}</>;
     }
     const start = Math.max(0, Math.min(karaoke.segmentStart, text.length));
     const cut = Math.max(start, Math.min(karaoke.segmentEnd, text.length));
@@ -352,9 +416,9 @@ export default function App() {
     const pending = text.slice(cut);
     return (
       <>
-        <span className="karaokeBefore">{before}</span>
-        <span className="karaokeSpoken">{spoken}</span>
-        <span className="karaokePending">{pending}</span>
+        <span className="karaokeBefore">{highlightChunk(before, speaker)}</span>
+        <span className="karaokeSpoken">{highlightChunk(spoken, speaker)}</span>
+        <span className="karaokePending">{highlightChunk(pending, speaker)}</span>
       </>
     );
   };
@@ -842,7 +906,9 @@ export default function App() {
         <section className="column negative">
           <div className="columnHeader richHeader">
             <div className="identity">
-              <div className={`avatar negativeAvatar ${speakingSpeaker === "C" ? "speakingAvatar" : thinkingSpeaker === "C" ? "thinkingAvatar" : ""}`}>C</div>
+              <div className={`avatar negativeAvatar ${speakingSpeaker === "C" ? "speakingAvatar" : thinkingSpeaker === "C" ? "thinkingAvatar" : ""}`}>
+                <img className="avatarImg" src={negativeAvatarSrc} alt="反方头像" />
+              </div>
               <div>
                 <h2>AI Negative</h2>
                 <p>反方</p>
@@ -871,7 +937,7 @@ export default function App() {
                   <div className={`roundTag ${active ? "activeRoundTag" : ""}`}>第 {roundNo} 轮</div>
                   <p>
                     {getRoundText(roundNo, "C")
-                      ? renderKaraokeText(getRoundText(roundNo, "C"))
+                      ? renderKaraokeText(getRoundText(roundNo, "C"), "C")
                       : getRoundFallbackText(roundNo, "C")}
                   </p>
                 </div>
@@ -883,7 +949,9 @@ export default function App() {
         <section className="column affirmative">
           <div className="columnHeader richHeader">
             <div className="identity">
-              <div className={`avatar affirmativeAvatar ${speakingSpeaker === "B" ? "speakingAvatar" : thinkingSpeaker === "B" ? "thinkingAvatar" : ""}`}>B</div>
+              <div className={`avatar affirmativeAvatar ${speakingSpeaker === "B" ? "speakingAvatar" : thinkingSpeaker === "B" ? "thinkingAvatar" : ""}`}>
+                <img className="avatarImg" src={affirmativeAvatarSrc} alt="正方头像" />
+              </div>
               <div>
                 <h2>AI Affirmative</h2>
                 <p>正方</p>
@@ -912,7 +980,7 @@ export default function App() {
                   <div className={`roundTag ${active ? "activeRoundTag" : ""}`}>第 {roundNo} 轮</div>
                   <p>
                     {getRoundText(roundNo, "B")
-                      ? renderKaraokeText(getRoundText(roundNo, "B"))
+                      ? renderKaraokeText(getRoundText(roundNo, "B"), "B")
                       : getRoundFallbackText(roundNo, "B")}
                   </p>
                 </div>
@@ -924,7 +992,10 @@ export default function App() {
 
       <footer className="judgeDock">
         <div className="dockLeft">
-          <div className="dockTitle">裁判</div>
+          <div className="dockTitleWithAvatar">
+            <img className="dockJudgeAvatar" src={judgeAvatarSrc} alt="裁判头像" />
+            <div className="dockTitle">裁判</div>
+          </div>
           {judge ? (
             <div className="dockSub dockSubResult">
               <div className="dockWinner">

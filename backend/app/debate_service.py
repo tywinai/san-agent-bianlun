@@ -67,6 +67,37 @@ class DebateService:
             return "en"
         return "auto"
 
+    @staticmethod
+    def _normalize_text_for_match(text: str) -> str:
+        lowered = (text or "").strip().lower()
+        lowered = re.sub(r"[^a-z0-9\s]", "", lowered)
+        lowered = re.sub(r"\s+", " ", lowered)
+        return lowered
+
+    @classmethod
+    def _is_teaching_topic(cls, topic: str) -> bool:
+        normalized = cls._normalize_text_for_match(topic)
+        target = cls._normalize_text_for_match(TEACHING_TOPIC)
+        if normalized == target:
+            return True
+        return "robots" in normalized and "elderly" in normalized and "care" in normalized
+
+    @staticmethod
+    def _dedupe_sentences(text: str) -> str:
+        parts = re.split(r"(?<=[.!?])\s+", (text or "").strip())
+        seen = set()
+        kept: List[str] = []
+        for part in parts:
+            s = part.strip()
+            if not s:
+                continue
+            key = re.sub(r"\s+", " ", s.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            kept.append(s)
+        return " ".join(kept).strip()
+
     async def run_debate(self, topic: str, rounds: int, model_name: str):
         transcript: List[DebateRound] = []
 
@@ -80,8 +111,8 @@ class DebateService:
         raise ValueError("Debate stream ended without final result")
 
     async def run_debate_stream(self, topic: str, rounds: int, model_name: str) -> AsyncGenerator[Dict, None]:
-        if topic.strip() == TEACHING_TOPIC:
-            async for event in self._run_teaching_stream(model_name=model_name):
+        if self._is_teaching_topic(topic):
+            async for event in self._run_teaching_stream(model_name=model_name, rounds=rounds):
                 yield event
             return
 
@@ -294,8 +325,10 @@ class DebateService:
             "judge": judge.model_dump(),
         }
 
-    async def _run_teaching_stream(self, model_name: str) -> AsyncGenerator[Dict, None]:
+    async def _run_teaching_stream(self, model_name: str, rounds: int) -> AsyncGenerator[Dict, None]:
         transcript: List[DebateRound] = []
+        used_pros: List[str] = []
+        used_cons: List[str] = []
 
         b_system = (
             "You are Debater B (affirmative). Support the motion in English only. "
@@ -308,21 +341,41 @@ class DebateService:
             "Do not copy all lines mechanically; integrate them naturally into rebuttal language."
         )
 
-        total_rounds = min(len(TEACHING_PROS), len(TEACHING_CONS))
+        total_rounds = max(3, rounds)
         for idx in range(1, total_rounds + 1):
             yield {"type": "round_start", "round": idx}
 
             history = self._format_history(transcript, "en")
+            rounds_left = total_rounds - idx + 1
+            pros_needed = max(0, 3 - len(used_pros))
+            cons_needed = max(0, 3 - len(used_cons))
+
+            if pros_needed > 0 and rounds_left <= pros_needed:
+                pro_requirement = (
+                    f"In this round, include at least {pros_needed} verbatim sentence(s) from the pro core bank to ensure"
+                    " at least 3 unique pro core sentences are used by the end."
+                )
+            elif pros_needed > 0:
+                pro_requirement = (
+                    "Prefer to include at least one new core pro sentence in this round. "
+                    f"Currently covered: {len(used_pros)}/3 minimum."
+                )
+            else:
+                pro_requirement = "You already met the core-usage minimum. Avoid unnecessary repetition."
+
             b_user = (
                 f"Topic: {TEACHING_TOPIC}\n"
                 f"Round: {idx}\n"
                 "Core pro sentence bank (reference only):\n"
                 + "\n".join([f"- {x}" for x in TEACHING_PROS])
                 + "\n"
+                + "Already used core pro examples in earlier rounds:\n"
+                + ("\n".join([f"- {x}" for x in used_pros]) if used_pros else "- none")
+                + "\n"
                 f"Debate history:\n{history}\n"
                 "Task: Speak as affirmative in 70-120 English words. Use the core sentence bank naturally as evidence examples. "
-                "Do not force a specific sentence each round. Across the whole debate, ensure you have used multiple core examples. "
-                "In the final round, include at least two example sentences from the bank verbatim."
+                "Do not force a specific sentence each round. Avoid repeating the same sentence or claim wording from your previous rounds.\n"
+                f"Additional requirement: {pro_requirement}"
             )
             b_parts: List[str] = []
             async for chunk in self.client.chat_stream(
@@ -337,7 +390,24 @@ class DebateService:
                 b_parts.append(chunk)
                 yield {"type": "chunk", "speaker": "B", "round": idx, "delta": chunk}
             b_text = "".join(b_parts).strip()
+            b_text = self._dedupe_sentences(b_text)
+            for core in TEACHING_PROS:
+                if core.lower() in b_text.lower() and core not in used_pros:
+                    used_pros.append(core)
             yield {"type": "turn_end", "speaker": "B", "round": idx, "text": b_text}
+
+            if cons_needed > 0 and rounds_left <= cons_needed:
+                con_requirement = (
+                    f"In this round, include at least {cons_needed} verbatim sentence(s) from the con core bank to ensure"
+                    " at least 3 unique con core sentences are used by the end."
+                )
+            elif cons_needed > 0:
+                con_requirement = (
+                    "Prefer to include at least one new core con sentence in this round. "
+                    f"Currently covered: {len(used_cons)}/3 minimum."
+                )
+            else:
+                con_requirement = "You already met the core-usage minimum. Avoid unnecessary repetition."
 
             c_user = (
                 f"Topic: {TEACHING_TOPIC}\n"
@@ -346,10 +416,13 @@ class DebateService:
                 "Core con sentence bank (reference only):\n"
                 + "\n".join([f"- {x}" for x in TEACHING_CONS])
                 + "\n"
+                + "Already used core con examples in earlier rounds:\n"
+                + ("\n".join([f"- {x}" for x in used_cons]) if used_cons else "- none")
+                + "\n"
                 f"Debate history:\n{history}\n"
                 "Task: Speak as negative in 70-120 English words. Rebut B and use the core sentence bank naturally as evidence examples. "
-                "Do not force a specific sentence each round. Across the whole debate, ensure you have used multiple core examples. "
-                "In the final round, include at least two example sentences from the bank verbatim."
+                "Do not force a specific sentence each round. Avoid repeating the same sentence or claim wording from your previous rounds.\n"
+                f"Additional requirement: {con_requirement}"
             )
             c_parts: List[str] = []
             async for chunk in self.client.chat_stream(
@@ -364,6 +437,10 @@ class DebateService:
                 c_parts.append(chunk)
                 yield {"type": "chunk", "speaker": "C", "round": idx, "delta": chunk}
             c_text = "".join(c_parts).strip()
+            c_text = self._dedupe_sentences(c_text)
+            for core in TEACHING_CONS:
+                if core.lower() in c_text.lower() and core not in used_cons:
+                    used_cons.append(core)
             yield {"type": "turn_end", "speaker": "C", "round": idx, "text": c_text}
 
             transcript.append(DebateRound(round=idx, b_statement=b_text, c_statement=c_text))
