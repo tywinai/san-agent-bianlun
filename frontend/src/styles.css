@@ -458,6 +458,10 @@ body {
   padding: 0 2px;
 }
 
+.mdBold {
+  font-weight: 800;
+}
+
 .bubbleNegative {
   background: #fff7f7;
   border-color: #f2c8c5;

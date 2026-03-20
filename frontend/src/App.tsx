@@ -366,14 +366,38 @@ export default function App() {
   };
 
   const renderKaraokeText = (text: string, speakerHint?: "B" | "C"): JSX.Element => {
-    const highlightChunk = (chunk: string, speaker: "B" | "C") => {
+    const renderMarkdownBold = (raw: string, keyPrefix: string): Array<string | JSX.Element> => {
+      const out: Array<string | JSX.Element> = [];
+      const regex = /\*\*(.+?)\*\*/g;
+      let last = 0;
+      let match: RegExpExecArray | null;
+      while ((match = regex.exec(raw)) !== null) {
+        const start = match.index;
+        const end = start + match[0].length;
+        if (start > last) {
+          out.push(raw.slice(last, start));
+        }
+        out.push(
+          <strong className="mdBold" key={`${keyPrefix}-bold-${start}-${end}`}>
+            {match[1]}
+          </strong>
+        );
+        last = end;
+      }
+      if (last < raw.length) {
+        out.push(raw.slice(last));
+      }
+      return out.length > 0 ? out : [raw];
+    };
+
+    const highlightChunk = (chunk: string, speaker: "B" | "C", keyPrefix: string) => {
       if (!isTeachingTopic || !chunk.trim()) {
-        return chunk;
+        return renderMarkdownBold(chunk, keyPrefix);
       }
       const refs = (speaker === "B" ? teachingPros : teachingCons).map((s) => s.trim()).filter(Boolean);
       const escaped = refs.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
       if (escaped.length === 0) {
-        return chunk;
+        return renderMarkdownBold(chunk, keyPrefix);
       }
       const regex = new RegExp(escaped.join("|"), "gi");
       const out: Array<string | JSX.Element> = [];
@@ -383,19 +407,19 @@ export default function App() {
         const start = match.index;
         const end = start + match[0].length;
         if (start > last) {
-          out.push(chunk.slice(last, start));
+          out.push(...renderMarkdownBold(chunk.slice(last, start), `${keyPrefix}-plain-${last}`));
         }
         out.push(
-          <mark className="coreHighlight" key={`${speaker}-${start}-${end}`}>
-            {chunk.slice(start, end)}
+          <mark className="coreHighlight" key={`${keyPrefix}-core-${speaker}-${start}-${end}`}>
+            {renderMarkdownBold(chunk.slice(start, end), `${keyPrefix}-core-text-${start}`)}
           </mark>
         );
         last = end;
       }
       if (last < chunk.length) {
-        out.push(chunk.slice(last));
+        out.push(...renderMarkdownBold(chunk.slice(last), `${keyPrefix}-tail-${last}`));
       }
-      return out.length > 0 ? out : chunk;
+      return out.length > 0 ? out : renderMarkdownBold(chunk, `${keyPrefix}-fallback`);
     };
 
     const speaker: "B" | "C" = speakerHint || (karaoke.speaker === "C" ? "C" : "B");
@@ -407,7 +431,7 @@ export default function App() {
       karaoke.segmentStart === undefined ||
       karaoke.segmentEnd === undefined
     ) {
-      return <>{highlightChunk(text, speaker)}</>;
+      return <>{highlightChunk(text, speaker, "full")}</>;
     }
     const start = Math.max(0, Math.min(karaoke.segmentStart, text.length));
     const cut = Math.max(start, Math.min(karaoke.segmentEnd, text.length));
@@ -416,9 +440,9 @@ export default function App() {
     const pending = text.slice(cut);
     return (
       <>
-        <span className="karaokeBefore">{highlightChunk(before, speaker)}</span>
-        <span className="karaokeSpoken">{highlightChunk(spoken, speaker)}</span>
-        <span className="karaokePending">{highlightChunk(pending, speaker)}</span>
+        <span className="karaokeBefore">{highlightChunk(before, speaker, "before")}</span>
+        <span className="karaokeSpoken">{highlightChunk(spoken, speaker, "spoken")}</span>
+        <span className="karaokePending">{highlightChunk(pending, speaker, "pending")}</span>
       </>
     );
   };

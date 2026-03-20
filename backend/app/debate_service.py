@@ -1,4 +1,5 @@
 import json
+import random
 import re
 from typing import AsyncGenerator, Dict, List
 
@@ -97,6 +98,32 @@ class DebateService:
             seen.add(key)
             kept.append(s)
         return " ".join(kept).strip()
+
+    @staticmethod
+    def _build_teaching_core_plan(core_bank: List[str], total_rounds: int) -> Dict[int, List[str]]:
+        """
+        Build a randomized round->core-sentences assignment plan.
+        - If rounds >= core count, try to cover all core sentences.
+        - Otherwise, cover as many as possible but at least 3.
+        - Distribute one core sentence per selected round to avoid stacking all in round 1.
+        """
+        plan: Dict[int, List[str]] = {i: [] for i in range(1, total_rounds + 1)}
+        if not core_bank:
+            return plan
+
+        usage_target = min(len(core_bank), max(3, min(total_rounds, len(core_bank))))
+        selected = core_bank[:]
+        random.shuffle(selected)
+        selected = selected[:usage_target]
+
+        rounds = list(range(1, total_rounds + 1))
+        random.shuffle(rounds)
+        chosen_rounds = sorted(rounds[:usage_target])
+
+        for sentence, round_no in zip(selected, chosen_rounds):
+            plan[round_no].append(sentence)
+
+        return plan
 
     async def run_debate(self, topic: str, rounds: int, model_name: str):
         transcript: List[DebateRound] = []
@@ -342,26 +369,26 @@ class DebateService:
         )
 
         total_rounds = max(3, rounds)
+        pro_plan = self._build_teaching_core_plan(TEACHING_PROS, total_rounds)
+        con_plan = self._build_teaching_core_plan(TEACHING_CONS, total_rounds)
+
         for idx in range(1, total_rounds + 1):
             yield {"type": "round_start", "round": idx}
 
             history = self._format_history(transcript, "en")
-            rounds_left = total_rounds - idx + 1
-            pros_needed = max(0, 3 - len(used_pros))
-            cons_needed = max(0, 3 - len(used_cons))
+            assigned_pros = pro_plan.get(idx, [])
+            assigned_cons = con_plan.get(idx, [])
 
-            if pros_needed > 0 and rounds_left <= pros_needed:
+            if assigned_pros:
                 pro_requirement = (
-                    f"In this round, include at least {pros_needed} verbatim sentence(s) from the pro core bank to ensure"
-                    " at least 3 unique pro core sentences are used by the end."
-                )
-            elif pros_needed > 0:
-                pro_requirement = (
-                    "Prefer to include at least one new core pro sentence in this round. "
-                    f"Currently covered: {len(used_pros)}/3 minimum."
+                    "In this round, include these exact pro core sentence(s) verbatim:\n"
+                    + "\n".join([f"- {x}" for x in assigned_pros])
                 )
             else:
-                pro_requirement = "You already met the core-usage minimum. Avoid unnecessary repetition."
+                pro_requirement = (
+                    "In this round, do not add any new verbatim pro core sentence. "
+                    "Focus on natural argument and rebuttal."
+                )
 
             b_user = (
                 f"Topic: {TEACHING_TOPIC}\n"
@@ -396,18 +423,16 @@ class DebateService:
                     used_pros.append(core)
             yield {"type": "turn_end", "speaker": "B", "round": idx, "text": b_text}
 
-            if cons_needed > 0 and rounds_left <= cons_needed:
+            if assigned_cons:
                 con_requirement = (
-                    f"In this round, include at least {cons_needed} verbatim sentence(s) from the con core bank to ensure"
-                    " at least 3 unique con core sentences are used by the end."
-                )
-            elif cons_needed > 0:
-                con_requirement = (
-                    "Prefer to include at least one new core con sentence in this round. "
-                    f"Currently covered: {len(used_cons)}/3 minimum."
+                    "In this round, include these exact con core sentence(s) verbatim:\n"
+                    + "\n".join([f"- {x}" for x in assigned_cons])
                 )
             else:
-                con_requirement = "You already met the core-usage minimum. Avoid unnecessary repetition."
+                con_requirement = (
+                    "In this round, do not add any new verbatim con core sentence. "
+                    "Focus on natural argument and rebuttal."
+                )
 
             c_user = (
                 f"Topic: {TEACHING_TOPIC}\n"
