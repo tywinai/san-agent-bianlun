@@ -39,8 +39,10 @@ type KaraokeState = {
   speaker?: "B" | "C";
   judgeRound?: number;
   sourceText?: string;
+  segmentText?: string;
   segmentStart?: number;
   segmentEnd?: number;
+  segmentTargetEnd?: number;
 };
 
 function ensureRound(source: Record<number, LiveRound>, round: number): Record<number, LiveRound> {
@@ -63,23 +65,31 @@ function base64ToBlob(base64: string, mimeType: string): Blob {
   return new Blob([bytes], { type: mimeType });
 }
 
-function splitSentencesWithRanges(text: string): Array<{ segment: string; start: number; end: number }> {
-  const result: Array<{ segment: string; start: number; end: number }> = [];
-  const regex = /[^。！？!?；;\n]+[。！？!?；;\n]?/g;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    const segment = match[0].trim();
-    if (!segment) {
-      continue;
+function currentSentenceFromProgress(text: string, index: number): string {
+  const source = text || "";
+  if (!source.trim()) {
+    return "";
+  }
+  const i = Math.max(0, Math.min(index, source.length));
+  const boundary = /[。！？!?;；\n]/;
+
+  let start = 0;
+  for (let p = i - 1; p >= 0; p -= 1) {
+    if (boundary.test(source[p])) {
+      start = p + 1;
+      break;
     }
-    const start = match.index;
-    const end = match.index + match[0].length;
-    result.push({ segment, start, end });
   }
-  if (result.length === 0 && text.trim()) {
-    result.push({ segment: text.trim(), start: 0, end: text.length });
+
+  let end = source.length;
+  for (let p = i; p < source.length; p += 1) {
+    if (boundary.test(source[p])) {
+      end = p + 1;
+      break;
+    }
   }
-  return result;
+
+  return source.slice(start, end).trim();
 }
 
 export default function App() {
@@ -117,6 +127,7 @@ export default function App() {
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [audioNeedsUnlock, setAudioNeedsUnlock] = useState(false);
   const [karaoke, setKaraoke] = useState<KaraokeState>({ active: false });
+  const [viewMode, setViewMode] = useState<"expanded" | "focus">("expanded");
 
   const setUiStatus = (
     key: "idle" | "thinking" | "speaking" | "done" | "error",
@@ -167,6 +178,10 @@ export default function App() {
 
   const thinkingSpeaker = activeSpeaker && !speakingSpeaker ? activeSpeaker : null;
 
+  const topicLang = useMemo<"zh" | "en">(() => {
+    return /[\u4e00-\u9fff]/.test(topic) ? "zh" : "en";
+  }, [topic]);
+
   const isTeachingTopic = useMemo(() => {
     const normalize = (v: string) =>
       v
@@ -214,6 +229,19 @@ export default function App() {
     C: "反方",
     DRAW: "平局"
   };
+
+  const sideViewpoints = useMemo(() => {
+    if (topicLang === "en") {
+      return {
+        b: "Viewpoint: robots improve safety and care efficiency.",
+        c: "Viewpoint: robots cannot replace empathy and human warmth."
+      };
+    }
+    return {
+      b: "观点：机器人可提升照护安全与效率。",
+      c: "观点：机器人无法替代同理心与人情温度。"
+    };
+  }, [topicLang]);
 
   const dockScoreSummary = useMemo(() => {
     if (!judge || scoreDimensions.length === 0) {
@@ -365,6 +393,35 @@ export default function App() {
     return "...";
   };
 
+  const getFocusSubtitle = (speaker: "B" | "C") => {
+    if (
+      speakingSpeaker === speaker &&
+      karaoke.active &&
+      karaoke.sourceText &&
+      karaoke.segmentEnd !== undefined
+    ) {
+      const current = currentSentenceFromProgress(karaoke.sourceText, karaoke.segmentEnd).trim();
+      if (current) {
+        return current;
+      }
+    }
+
+    if (thinkingSpeaker === speaker) {
+      return speaker === "B" ? "正方正在组织观点..." : "反方正在组织反驳...";
+    }
+
+    const latestRound = activeRound ?? roundNumbers[roundNumbers.length - 1];
+    if (!latestRound) {
+      return speaker === "B" ? "等待正方发言" : "等待反方发言";
+    }
+
+    const full = getRoundText(latestRound, speaker);
+    if (!full) {
+      return speaker === "B" ? "正方待发言" : "反方待发言";
+    }
+    return full.split(/(?<=[.!?。！？])\s+/)[0].trim();
+  };
+
   const renderKaraokeText = (text: string, speakerHint?: "B" | "C"): JSX.Element => {
     const renderMarkdownBold = (raw: string, keyPrefix: string): Array<string | JSX.Element> => {
       const out: Array<string | JSX.Element> = [];
@@ -507,8 +564,10 @@ export default function App() {
                     speaker: item.speaker,
                     judgeRound: item.judgeRound,
                     sourceText: item.sourceText || item.text,
+                    segmentText: item.text,
                     segmentStart: item.segmentStart ?? 0,
-                    segmentEnd: item.segmentEnd ?? (item.sourceText || item.text).length
+                    segmentEnd: item.segmentStart ?? 0,
+                    segmentTargetEnd: item.segmentEnd ?? (item.sourceText || item.text).length
                   });
 
                   timer = window.setInterval(() => {
@@ -535,7 +594,7 @@ export default function App() {
                       const absEnd = item.segmentEnd ?? (item.sourceText || item.text).length;
                       const absIndex = Math.min(absStart + nextIndex, absEnd);
                       updateSpokenText(item, absIndex);
-                      return { ...prev, segmentEnd: absIndex };
+                      return { ...prev, segmentEnd: absIndex, segmentTargetEnd: absEnd };
                     });
                   }, 40);
                 };
@@ -552,6 +611,7 @@ export default function App() {
                     return {
                       ...prev,
                       segmentEnd: item.segmentEnd ?? (item.sourceText || item.text).length,
+                      segmentTargetEnd: item.segmentEnd ?? (item.sourceText || item.text).length,
                       active: false
                     };
                   });
@@ -713,19 +773,16 @@ export default function App() {
     if (event.type === "turn_end" && event.speaker && event.text) {
       await waitForAudioIdle();
       const role: TTSRole = event.speaker === "B" ? "affirmative" : "negative";
-      const segments = splitSentencesWithRanges(event.text);
-      const prefetched = await Promise.all(
-        segments.map((seg) =>
-          prefetchSpeech(role, seg.segment, {
-            target: "debate",
-            round: event.round,
-            speaker: event.speaker,
-            sourceText: event.text,
-            segmentStart: seg.start,
-            segmentEnd: seg.end
-          })
-        )
-      );
+      const prefetched = [
+        await prefetchSpeech(role, event.text, {
+          target: "debate",
+          round: event.round,
+          speaker: event.speaker,
+          sourceText: event.text,
+          segmentStart: 0,
+          segmentEnd: event.text.length
+        })
+      ];
       await playPrefetchedInOrder(prefetched);
       return;
     }
@@ -745,18 +802,15 @@ export default function App() {
       await playSpeechAndWait("judge", `最终判决，胜方是${winner}。`, {
         judgeRound: activeRound ?? undefined
       });
-      const finalSegments = splitSentencesWithRanges(event.judge.reason);
-      const prefetched = await Promise.all(
-        finalSegments.map((seg) =>
-          prefetchSpeech("judge", seg.segment, {
-            target: "judge_reason",
-            judgeRound: activeRound ?? undefined,
-            sourceText: event.judge.reason,
-            segmentStart: seg.start,
-            segmentEnd: seg.end
-          })
-        )
-      );
+      const prefetched = [
+        await prefetchSpeech("judge", event.judge.reason, {
+          target: "judge_reason",
+          judgeRound: activeRound ?? undefined,
+          sourceText: event.judge.reason,
+          segmentStart: 0,
+          segmentEnd: event.judge.reason.length
+        })
+      ];
       await playPrefetchedInOrder(prefetched);
       setJudge(event.judge);
       setActiveSpeaker(null);
@@ -913,7 +967,9 @@ export default function App() {
             />
             <span>语音播报</span>
           </label>
-          <div className="statusText">状态：{statusText}</div>
+          <button className="modeBtn" onClick={() => setViewMode((m) => (m === "expanded" ? "focus" : "expanded"))}>
+            {viewMode === "expanded" ? "切换聚焦模式" : "切换内容模式"}
+          </button>
         </div>
       </header>
 
@@ -926,7 +982,45 @@ export default function App() {
 
       {error ? <p className="error">{error}</p> : null}
 
-      <main className="arenaMain">
+      <main className={`arenaMain ${viewMode === "focus" ? "focusMain" : ""}`}>
+        {viewMode === "focus" ? (
+          <>
+            <section className="focusCard negativeFocus">
+              <div className={`focusAvatarWrap ${speakingSpeaker === "C" ? "speakingAvatar" : thinkingSpeaker === "C" ? "thinkingAvatar" : ""}`}>
+                <img className="focusAvatar" src={negativeAvatarSrc} alt="反方头像" />
+              </div>
+              <div className={`liveDot ${speakingSpeaker === "C" ? "speaking" : thinkingSpeaker === "C" ? "thinking" : ""}`}>
+                {speakingSpeaker === "C" ? "speaking" : thinkingSpeaker === "C" ? "thinking" : "idle"}
+              </div>
+              <p className="focusViewpoint">{sideViewpoints.c}</p>
+              <div className="voiceWaves" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+                <span />
+                <span />
+              </div>
+            </section>
+
+            <section className="focusCard affirmativeFocus">
+              <div className={`focusAvatarWrap ${speakingSpeaker === "B" ? "speakingAvatar" : thinkingSpeaker === "B" ? "thinkingAvatar" : ""}`}>
+                <img className="focusAvatar" src={affirmativeAvatarSrc} alt="正方头像" />
+              </div>
+              <div className={`liveDot ${speakingSpeaker === "B" ? "speaking" : thinkingSpeaker === "B" ? "thinking" : ""}`}>
+                {speakingSpeaker === "B" ? "speaking" : thinkingSpeaker === "B" ? "thinking" : "idle"}
+              </div>
+              <p className="focusViewpoint">{sideViewpoints.b}</p>
+              <div className="voiceWaves" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+                <span />
+                <span />
+              </div>
+            </section>
+          </>
+        ) : (
+          <>
         <section className="column negative">
           <div className="columnHeader richHeader">
             <div className="identity">
@@ -936,6 +1030,7 @@ export default function App() {
               <div>
                 <h2>AI Negative</h2>
                 <p>反方</p>
+                <p className="sideViewpoint">{sideViewpoints.c}</p>
               </div>
             </div>
             <div className={`liveDot ${speakingSpeaker === "C" ? "speaking" : thinkingSpeaker === "C" ? "thinking" : ""}`}>
@@ -979,6 +1074,7 @@ export default function App() {
               <div>
                 <h2>AI Affirmative</h2>
                 <p>正方</p>
+                <p className="sideViewpoint">{sideViewpoints.b}</p>
               </div>
             </div>
             <div className={`liveDot ${speakingSpeaker === "B" ? "speaking" : thinkingSpeaker === "B" ? "thinking" : ""}`}>
@@ -1012,6 +1108,8 @@ export default function App() {
             })}
           </div>
         </section>
+          </>
+        )}
       </main>
 
       <footer className="judgeDock">
