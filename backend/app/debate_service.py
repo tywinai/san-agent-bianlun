@@ -6,6 +6,23 @@ from .llm_client import OpenAICompatClient
 from .schemas import DebateRound, JudgeResult
 
 
+TEACHING_TOPIC = "What are the pros and cons of using robots in elderly care?"
+TEACHING_PROS = [
+    "Robots can monitor health 24/7.",
+    "They are good at doing repetitive tasks.",
+    "They provide safety and convenience.",
+    "They enable old people to get better care.",
+    "They help old people to live safely.",
+]
+TEACHING_CONS = [
+    "Robots cannot show real empathy.",
+    "They lack human warmth.",
+    "They fail to understand feelings.",
+    "It's difficult for old people to learn to use robots.",
+    "Robots have trouble understanding old people's feelings.",
+]
+
+
 class DebateService:
     def __init__(self, client: OpenAICompatClient):
         self.client = client
@@ -63,6 +80,11 @@ class DebateService:
         raise ValueError("Debate stream ended without final result")
 
     async def run_debate_stream(self, topic: str, rounds: int, model_name: str) -> AsyncGenerator[Dict, None]:
+        if topic.strip() == TEACHING_TOPIC:
+            async for event in self._run_teaching_stream(model_name=model_name):
+                yield event
+            return
+
         transcript: List[DebateRound] = []
         lang = self._detect_topic_language(topic)
 
@@ -263,6 +285,139 @@ class DebateService:
             response_format={"type": "json_object"},
         )
 
+        judge_data = self._extract_json(judge_raw)
+        judge = JudgeResult(**judge_data)
+        yield {"type": "judge", "judge": judge.model_dump()}
+        yield {
+            "type": "done",
+            "transcript": [item.model_dump() for item in transcript],
+            "judge": judge.model_dump(),
+        }
+
+    async def _run_teaching_stream(self, model_name: str) -> AsyncGenerator[Dict, None]:
+        transcript: List[DebateRound] = []
+
+        b_system = (
+            "You are Debater B (affirmative). Support the motion in English only. "
+            "Use the provided core pro sentences as guidance when organizing your argument. "
+            "Do not copy all lines mechanically; integrate them naturally into debate language."
+        )
+        c_system = (
+            "You are Debater C (negative). Oppose the motion in English only. "
+            "Use the provided core con sentences as guidance when organizing your argument. "
+            "Do not copy all lines mechanically; integrate them naturally into rebuttal language."
+        )
+
+        total_rounds = min(len(TEACHING_PROS), len(TEACHING_CONS))
+        for idx in range(1, total_rounds + 1):
+            yield {"type": "round_start", "round": idx}
+
+            history = self._format_history(transcript, "en")
+            b_user = (
+                f"Topic: {TEACHING_TOPIC}\n"
+                f"Round: {idx}\n"
+                "Core pro sentence bank (reference only):\n"
+                + "\n".join([f"- {x}" for x in TEACHING_PROS])
+                + "\n"
+                f"Debate history:\n{history}\n"
+                "Task: Speak as affirmative in 70-120 English words. Use the core sentence bank naturally as evidence examples. "
+                "Do not force a specific sentence each round. Across the whole debate, ensure you have used multiple core examples. "
+                "In the final round, include at least two example sentences from the bank verbatim."
+            )
+            b_parts: List[str] = []
+            async for chunk in self.client.chat_stream(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": b_system},
+                    {"role": "user", "content": b_user},
+                ],
+                temperature=0.6,
+                max_tokens=260,
+            ):
+                b_parts.append(chunk)
+                yield {"type": "chunk", "speaker": "B", "round": idx, "delta": chunk}
+            b_text = "".join(b_parts).strip()
+            yield {"type": "turn_end", "speaker": "B", "round": idx, "text": b_text}
+
+            c_user = (
+                f"Topic: {TEACHING_TOPIC}\n"
+                f"Round: {idx}\n"
+                f"Opponent B just said:\n{b_text}\n"
+                "Core con sentence bank (reference only):\n"
+                + "\n".join([f"- {x}" for x in TEACHING_CONS])
+                + "\n"
+                f"Debate history:\n{history}\n"
+                "Task: Speak as negative in 70-120 English words. Rebut B and use the core sentence bank naturally as evidence examples. "
+                "Do not force a specific sentence each round. Across the whole debate, ensure you have used multiple core examples. "
+                "In the final round, include at least two example sentences from the bank verbatim."
+            )
+            c_parts: List[str] = []
+            async for chunk in self.client.chat_stream(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": c_system},
+                    {"role": "user", "content": c_user},
+                ],
+                temperature=0.6,
+                max_tokens=260,
+            ):
+                c_parts.append(chunk)
+                yield {"type": "chunk", "speaker": "C", "round": idx, "delta": chunk}
+            c_text = "".join(c_parts).strip()
+            yield {"type": "turn_end", "speaker": "C", "round": idx, "text": c_text}
+
+            transcript.append(DebateRound(round=idx, b_statement=b_text, c_statement=c_text))
+            yield {
+                "type": "round_end",
+                "round": idx,
+                "b_statement": b_text,
+                "c_statement": c_text,
+            }
+
+            summary_prompt = (
+                "You are Judge A. Give a concise English summary of this round. "
+                "Mention whether each side used its core teaching points effectively, and who has a slight edge (or tie).\n\n"
+                f"Round {idx} B: {b_text}\n"
+                f"Round {idx} C: {c_text}"
+            )
+            summary = await self.client.chat(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "You are a strict and concise debate judge. English only."},
+                    {"role": "user", "content": summary_prompt},
+                ],
+                temperature=0.3,
+                max_tokens=180,
+            )
+            yield {"type": "judge_round", "round": idx, "summary": summary}
+
+        full_record = self._format_history(transcript, "en")
+        judge_prompt = (
+            "You are Judge A. Based on the full debate, output winner, scores, and detailed reason in JSON.\n"
+            "Dimensions: logic, evidence, rebuttal, clarity (0-10 each).\n"
+            "Output valid JSON only:\n"
+            "{\n"
+            '  "winner": "B|C|DRAW",\n'
+            '  "scores": {\n'
+            '    "B": {"logic": 0, "evidence": 0, "rebuttal": 0, "clarity": 0},\n'
+            '    "C": {"logic": 0, "evidence": 0, "rebuttal": 0, "clarity": 0}\n'
+            "  },\n"
+            '  "reason": "Detailed reason in English"\n'
+            "}\n\n"
+            f"Topic: {TEACHING_TOPIC}\n"
+            "Teaching objective: evaluate application of core pro/con points in debate language.\n"
+            f"Debate Record:\n{full_record}"
+        )
+        judge_raw = await self.client.chat(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "You are a strict debate judge. English only."},
+                {"role": "user", "content": judge_prompt},
+            ],
+            temperature=0.2,
+            max_tokens=800,
+            response_format={"type": "json_object"},
+        )
         judge_data = self._extract_json(judge_raw)
         judge = JudgeResult(**judge_data)
         yield {"type": "judge", "judge": judge.model_dump()}

@@ -75,11 +75,12 @@ body {
   border-bottom: 3px solid rgba(26, 35, 126, 0.16);
   padding: 6px 0 10px;
   font-family: Manrope, sans-serif;
-  font-size: clamp(24px, 4vw, 42px);
+  font-size: clamp(18px, 2.1vw, 30px);
   font-weight: 800;
   color: var(--primary);
   background: transparent;
   outline: none;
+  line-height: 1.25;
 }
 
 .roundBadge {
@@ -233,7 +234,7 @@ body {
 
 .arenaMain {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 10px;
   flex: 1;
   min-height: 0;
@@ -612,6 +613,70 @@ pre {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
+}
+
+.viewJudgeBtn {
+  margin-top: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-family: Inter, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.judgeModalMask {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.5);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+
+.judgeModal {
+  width: min(760px, 100%);
+  max-height: 86vh;
+  overflow: auto;
+  background: #fff;
+  border-radius: 14px;
+  border: 1px solid #d7dfef;
+  box-shadow: 0 24px 50px rgba(15, 23, 42, 0.25);
+  padding: 16px;
+}
+
+.judgeModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.judgeModalHeader h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.closeJudgeBtn {
+  border: 1px solid #d1d8ea;
+  border-radius: 8px;
+  background: #f8faff;
+  color: #233457;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.judgeModalWinner {
+  margin: 0 0 10px;
+  color: #1f2b49;
+  font-weight: 700;
 }
 
 .dockScoreChip {

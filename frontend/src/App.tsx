@@ -6,7 +6,6 @@ import type {
   DebateRound,
   DebateStreamEvent,
   JudgeResult,
-  RoundJudgeSummary,
   TTSRole
 } from "./types";
 import "./styles.css";
@@ -81,15 +80,15 @@ function splitSentencesWithRanges(text: string): Array<{ segment: string; start:
 }
 
 export default function App() {
-  const [topic, setTopic] = useState("AI 是否会在未来 10 年大规模替代人类工作？");
-  const [rounds, setRounds] = useState(3);
+  const [topic, setTopic] = useState("What are the pros and cons of using robots in elderly care?");
+  const [rounds, setRounds] = useState(5);
   const [modelName, setModelName] = useState("gpt-5.4");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DebateResponse | null>(null);
   const [liveRounds, setLiveRounds] = useState<Record<number, LiveRound>>({});
   const [judge, setJudge] = useState<JudgeResult | null>(null);
   const [judgeReasonDisplayed, setJudgeReasonDisplayed] = useState("");
-  const [judgeRoundSummaries, setJudgeRoundSummaries] = useState<RoundJudgeSummary[]>([]);
+  const [showJudgeModal, setShowJudgeModal] = useState(false);
   const [statusKey, setStatusKey] = useState<"idle" | "thinking" | "speaking" | "done" | "error">("idle");
   const [statusRole, setStatusRole] = useState<"A" | "B" | "C" | null>(null);
   const [statusRound, setStatusRound] = useState<number | null>(null);
@@ -113,7 +112,6 @@ export default function App() {
 
   const negativeBodyRef = useRef<HTMLDivElement | null>(null);
   const affirmativeBodyRef = useRef<HTMLDivElement | null>(null);
-  const judgeBodyRef = useRef<HTMLDivElement | null>(null);
   const audioQueueRef = useRef<AudioQueueItem[]>([]);
   const isSpeakingRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -150,13 +148,6 @@ export default function App() {
   }, [karaoke]);
 
   const thinkingSpeaker = activeSpeaker && !speakingSpeaker ? activeSpeaker : null;
-
-  const latestSummary = useMemo(() => {
-    if (judgeRoundSummaries.length === 0) {
-      return "等待裁判分析日志...";
-    }
-    return judgeRoundSummaries[judgeRoundSummaries.length - 1].summary;
-  }, [judgeRoundSummaries]);
 
   const affirmativeEdge = useMemo(() => {
     if (!judge) {
@@ -212,19 +203,7 @@ export default function App() {
     });
   }, [judge, scoreDimensions]);
 
-  const hasDebateStarted =
-    roundNumbers.length > 0 || judgeRoundSummaries.length > 0 || Boolean(result) || loading;
-
-  const shouldShowJudgePending =
-    !judge &&
-    hasDebateStarted &&
-    !activeSpeaker &&
-    (statusRole === "A" || statusKey === "done");
-
-  const shouldShowJudgePlaceholder =
-    !judge &&
-    !shouldShowJudgePending &&
-    (judgeRoundSummaries.length === 0 || (activeRound !== null && judgeRoundSummaries.length < activeRound));
+  const hasDebateStarted = roundNumbers.length > 0 || Boolean(result) || loading;
 
   const emptyHints = useMemo(() => {
     const idle = statusKey === "idle";
@@ -330,17 +309,6 @@ export default function App() {
           return { ...next, [item.round as number]: { ...row, b: spoken } };
         }
         return { ...next, [item.round as number]: { ...row, c: spoken } };
-      });
-      return;
-    }
-
-    if (item.target === "judge_summary" && item.judgeRound) {
-      setJudgeRoundSummaries((prev) => {
-        const has = prev.some((x) => x.round === item.judgeRound);
-        if (!has) {
-          return [...prev, { round: item.judgeRound as number, summary: spoken }].sort((a, b) => a.round - b.round);
-        }
-        return prev.map((x) => (x.round === item.judgeRound ? { ...x, summary: spoken } : x));
       });
       return;
     }
@@ -676,28 +644,6 @@ export default function App() {
 
     if (event.type === "judge_round" && event.round && event.summary) {
       setUiStatus("thinking", "A", event.round);
-      setActiveSpeaker("A");
-      setJudgeRoundSummaries((prev) => {
-        const filtered = prev.filter((item) => item.round !== event.round);
-        return [...filtered, { round: event.round, summary: "" }].sort(
-          (a, b) => a.round - b.round
-        );
-      });
-      await waitForAudioIdle();
-      const judgeSegments = splitSentencesWithRanges(event.summary);
-      const prefetched = await Promise.all(
-        judgeSegments.map((seg) =>
-          prefetchSpeech("judge", seg.segment, {
-            target: "judge_summary",
-            judgeRound: event.round,
-            sourceText: event.summary,
-            segmentStart: seg.start,
-            segmentEnd: seg.end
-          })
-        )
-      );
-      await playPrefetchedInOrder(prefetched);
-      setActiveSpeaker(null);
       return;
     }
 
@@ -778,7 +724,7 @@ export default function App() {
     setResult(null);
     setJudge(null);
     setJudgeReasonDisplayed("");
-    setJudgeRoundSummaries([]);
+    setShowJudgeModal(false);
     setLiveRounds({});
     setActiveRound(null);
     setActiveSpeaker(null);
@@ -834,19 +780,10 @@ export default function App() {
   }, [activeSpeaker, liveRounds]);
 
   useEffect(() => {
-    if (!judgeBodyRef.current) {
-      return;
-    }
-    judgeBodyRef.current.scrollTo({ top: judgeBodyRef.current.scrollHeight, behavior: "smooth" });
-  }, [judgeRoundSummaries, judge]);
-
-  useEffect(() => {
     if (!ttsEnabled) {
       stopAudioPlayback();
     }
   }, [ttsEnabled]);
-
-  const judgeSpeaking = speakingSpeaker === "A";
 
   const unlockAudio = () => {
     setAudioNeedsUnlock(false);
@@ -943,72 +880,6 @@ export default function App() {
           </div>
         </section>
 
-        <section className="column judge">
-          <div className="columnHeader richHeader">
-            <div className="identity">
-              <div className={`avatar judgeAvatar ${speakingSpeaker === "A" ? "speakingAvatar" : thinkingSpeaker === "A" ? "thinkingAvatar" : ""}`}>A</div>
-              <div>
-                <h2>AI Judge</h2>
-                <p>裁判</p>
-              </div>
-            </div>
-            <div className={`liveDot ${judgeSpeaking ? "speaking" : thinkingSpeaker === "A" ? "thinking" : ""}`}>
-              {judgeSpeaking ? "speaking" : thinkingSpeaker === "A" ? "thinking" : "idle"}
-            </div>
-          </div>
-          <div
-            className="columnBody logicStream"
-            ref={judgeBodyRef}
-          >
-            {judgeRoundSummaries.map((item) => (
-              <div key={`judge-round-${item.round}`} className="judgeCard" data-round={item.round}>
-                <div className="roundTag">第 {item.round} 轮小结</div>
-                <p className="judgeReason">{renderKaraokeText(item.summary)}</p>
-              </div>
-            ))}
-            {judge ? (
-              <div className="judgeCard finalVerdict">
-                <div className="roundTag">最终判决</div>
-                <p>
-                  <strong>胜方：</strong>
-                  {roleLabelMap[judge.winner] || judge.winner}
-                </p>
-                {scoreDimensions.length > 0 ? (
-                  <div className="scoreBoard">
-                    {scoreDimensions.map((dimension) => {
-                      const bValue = Number(judge.scores.B?.[dimension] ?? 0);
-                      const cValue = Number(judge.scores.C?.[dimension] ?? 0);
-                      const total = Math.max(bValue + cValue, 1);
-                      const bWidth = (bValue / total) * 100;
-                      const cWidth = (cValue / total) * 100;
-                      return (
-                        <div key={dimension} className="scoreRow">
-                          <div className="scoreMeta">
-                            <span>{scoreLabelMap[dimension] || dimension}</span>
-                              <span>
-                              正方 {bValue.toFixed(1)} : {cValue.toFixed(1)} 反方
-                            </span>
-                          </div>
-                          <div className="scoreBar">
-                            <div className="scoreBarB" style={{ width: `${bWidth}%` }} />
-                            <div className="scoreBarC" style={{ width: `${cWidth}%` }} />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                <p className="judgeReason">{renderKaraokeText(judgeReasonDisplayed || judge.reason)}</p>
-              </div>
-            ) : shouldShowJudgePending ? (
-              <div className="judgeCard pending">裁判评审中...</div>
-            ) : null}
-            {shouldShowJudgePlaceholder ? (
-              <div className="emptyState emptyJudge">{emptyHints.judge}</div>
-            ) : null}
-          </div>
-        </section>
-
         <section className="column affirmative">
           <div className="columnHeader richHeader">
             <div className="identity">
@@ -1069,9 +940,10 @@ export default function App() {
                   </div>
                 ))}
               </div>
+              <button className="viewJudgeBtn" onClick={() => setShowJudgeModal(true)}>查看裁判详情</button>
             </div>
           ) : (
-            <div className="dockSub">{latestSummary}</div>
+            <div className="dockSub">{statusText}</div>
           )}
         </div>
         <div className="dockRight">
@@ -1091,6 +963,40 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {showJudgeModal && judge ? (
+        <div className="judgeModalMask" onClick={() => setShowJudgeModal(false)}>
+          <div className="judgeModal" onClick={(e) => e.stopPropagation()}>
+            <div className="judgeModalHeader">
+              <h3>裁判最终评审</h3>
+              <button className="closeJudgeBtn" onClick={() => setShowJudgeModal(false)}>关闭</button>
+            </div>
+            <p className="judgeModalWinner">胜方：{roleLabelMap[judge.winner] || judge.winner}</p>
+            <div className="scoreBoard">
+              {scoreDimensions.map((dimension) => {
+                const bValue = Number(judge.scores.B?.[dimension] ?? 0);
+                const cValue = Number(judge.scores.C?.[dimension] ?? 0);
+                const total = Math.max(bValue + cValue, 1);
+                const bWidth = (bValue / total) * 100;
+                const cWidth = (cValue / total) * 100;
+                return (
+                  <div key={`modal-${dimension}`} className="scoreRow">
+                    <div className="scoreMeta">
+                      <span>{scoreLabelMap[dimension] || dimension}</span>
+                      <span>正方 {bValue.toFixed(1)} : {cValue.toFixed(1)} 反方</span>
+                    </div>
+                    <div className="scoreBar">
+                      <div className="scoreBarB" style={{ width: `${bWidth}%` }} />
+                      <div className="scoreBarC" style={{ width: `${cWidth}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="judgeReason">{judgeReasonDisplayed || judge.reason}</p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
