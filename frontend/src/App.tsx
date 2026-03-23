@@ -22,6 +22,7 @@ type AudioQueueItem = {
   role: TTSRole;
   text: string;
   target?: "debate" | "judge_summary" | "judge_reason";
+  preserveRenderedText?: boolean;
   preparedBlob?: Blob;
   preparedMarks?: Array<{ time: number; text_offset: number; text: string }>;
   sourceText?: string;
@@ -114,6 +115,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<DebateResponse | null>(null);
   const [liveRounds, setLiveRounds] = useState<Record<number, LiveRound>>({});
+  const [streamBufferRounds, setStreamBufferRounds] = useState<Record<number, LiveRound>>({});
   const [judge, setJudge] = useState<JudgeResult | null>(null);
   const [judgeReasonDisplayed, setJudgeReasonDisplayed] = useState("");
   const [showJudgeModal, setShowJudgeModal] = useState(false);
@@ -164,17 +166,22 @@ export default function App() {
   }, [activeRound, result]);
 
   const speakingSpeaker = useMemo<"B" | "C" | "A" | null>(() => {
-    if (!karaoke.active || !karaoke.role) {
-      return null;
+    if (karaoke.active && karaoke.role) {
+      if (karaoke.role === "affirmative") {
+        return "B";
+      }
+      if (karaoke.role === "negative") {
+        return "C";
+      }
+      return "A";
     }
-    if (karaoke.role === "affirmative") {
-      return "B";
+
+    if (!ttsEnabled && statusKey === "speaking" && statusRole) {
+      return statusRole;
     }
-    if (karaoke.role === "negative") {
-      return "C";
-    }
-    return "A";
-  }, [karaoke]);
+
+    return null;
+  }, [karaoke, ttsEnabled, statusKey, statusRole]);
 
   const thinkingSpeaker = activeSpeaker && !speakingSpeaker ? activeSpeaker : null;
 
@@ -206,6 +213,20 @@ export default function App() {
     }
     return Math.round((b / total) * 100);
   }, [judge]);
+
+  const streamingAffirmativeEdge = useMemo(() => {
+    const roundsLive = Object.values(streamBufferRounds);
+    const bLen = roundsLive.reduce((acc, row) => acc + (row.b || "").replace(/\s+/g, "").length, 0);
+    const cLen = roundsLive.reduce((acc, row) => acc + (row.c || "").replace(/\s+/g, "").length, 0);
+    const total = bLen + cLen;
+    if (total < 12) {
+      return 50;
+    }
+    const pct = Math.round((bLen / total) * 100);
+    return Math.max(20, Math.min(80, pct));
+  }, [streamBufferRounds]);
+
+  const displayAffirmativeEdge = judge ? affirmativeEdge : streamingAffirmativeEdge;
 
   const scoreDimensions = useMemo(() => {
     if (!judge?.scores?.B && !judge?.scores?.C) {
@@ -360,6 +381,9 @@ export default function App() {
     const spoken = source.slice(0, cut);
 
     if (item.target === "debate" && item.speaker && item.round) {
+      if (item.preserveRenderedText) {
+        return;
+      }
       setLiveRounds((prev) => {
         const next = ensureRound(prev, item.round as number);
         const row = next[item.round as number];
@@ -665,6 +689,7 @@ export default function App() {
     text: string,
     meta?: {
       target?: "debate" | "judge_summary" | "judge_reason";
+      preserveRenderedText?: boolean;
       round?: number;
       speaker?: "B" | "C";
       judgeRound?: number;
@@ -685,6 +710,7 @@ export default function App() {
     text: string,
     meta?: {
       target?: "debate" | "judge_summary" | "judge_reason";
+      preserveRenderedText?: boolean;
       round?: number;
       speaker?: "B" | "C";
       judgeRound?: number;
@@ -702,6 +728,7 @@ export default function App() {
     text: string,
     meta?: {
       target?: "debate" | "judge_summary" | "judge_reason";
+      preserveRenderedText?: boolean;
       round?: number;
       speaker?: "B" | "C";
       judgeRound?: number;
@@ -753,6 +780,7 @@ export default function App() {
       setActiveRound(event.round);
       setActiveSpeaker(null);
       setLiveRounds((prev) => ensureRound(prev, event.round as number));
+      setStreamBufferRounds((prev) => ensureRound(prev, event.round as number));
       return;
     }
 
@@ -761,6 +789,20 @@ export default function App() {
       setActiveRound(event.round);
       setActiveSpeaker(event.speaker);
       setLiveRounds((prev) => ensureRound(prev, event.round as number));
+      setStreamBufferRounds((prev) => {
+        const next = ensureRound(prev, event.round as number);
+        const row = next[event.round as number];
+        if (event.speaker === "B") {
+          return {
+            ...next,
+            [event.round as number]: { ...row, b: `${row.b}${event.delta}` }
+          };
+        }
+        return {
+          ...next,
+          [event.round as number]: { ...row, c: `${row.c}${event.delta}` }
+        };
+      });
       return;
     }
 
@@ -770,12 +812,67 @@ export default function App() {
       return;
     }
 
-    if (event.type === "turn_end" && event.speaker && event.text) {
+    if (event.type === "turn_end" && event.speaker && event.text && event.round) {
+      if (!ttsEnabled) {
+        setUiStatus("speaking", event.speaker, event.round);
+        setActiveRound(event.round);
+        setActiveSpeaker(event.speaker);
+      }
+
+      setStreamBufferRounds((prev) => {
+        const next = ensureRound(prev, event.round as number);
+        const row = next[event.round as number];
+        if (event.speaker === "B") {
+          return {
+            ...next,
+            [event.round as number]: { ...row, b: event.text as string }
+          };
+        }
+        return {
+          ...next,
+          [event.round as number]: { ...row, c: event.text as string }
+        };
+      });
+
+      if (!ttsEnabled) {
+        setLiveRounds((prev) => {
+          const next = ensureRound(prev, event.round as number);
+          const row = next[event.round as number];
+          if (event.speaker === "B") {
+            return {
+              ...next,
+              [event.round as number]: { ...row, b: event.text as string }
+            };
+          }
+          return {
+            ...next,
+            [event.round as number]: { ...row, c: event.text as string }
+          };
+        });
+        return;
+      }
+
+      setLiveRounds((prev) => {
+        const next = ensureRound(prev, event.round as number);
+        const row = next[event.round as number];
+        if (event.speaker === "B") {
+          return {
+            ...next,
+            [event.round as number]: { ...row, b: "" }
+          };
+        }
+        return {
+          ...next,
+          [event.round as number]: { ...row, c: "" }
+        };
+      });
+
       await waitForAudioIdle();
       const role: TTSRole = event.speaker === "B" ? "affirmative" : "negative";
       const prefetched = [
         await prefetchSpeech(role, event.text, {
           target: "debate",
+          preserveRenderedText: false,
           round: event.round,
           speaker: event.speaker,
           sourceText: event.text,
@@ -868,6 +965,7 @@ export default function App() {
     setJudgeReasonDisplayed("");
     setShowJudgeModal(false);
     setLiveRounds({});
+    setStreamBufferRounds({});
     setActiveRound(null);
     setActiveSpeaker(null);
     eventQueueRef.current = [];
@@ -1147,12 +1245,12 @@ export default function App() {
             </button>
           </div>
           <div className="dockRow">
-            <span>正方优势</span>
-            <strong>{affirmativeEdge}%</strong>
+            <span>{judge ? "正方优势" : "正方优势（实时）"}</span>
+            <strong>{displayAffirmativeEdge}%</strong>
           </div>
           <div className="barWrap">
-            <div className="barPositive" style={{ width: `${affirmativeEdge}%` }} />
-            <div className="barNegative" style={{ width: `${100 - affirmativeEdge}%` }} />
+            <div className="barPositive" style={{ width: `${displayAffirmativeEdge}%` }} />
+            <div className="barNegative" style={{ width: `${100 - displayAffirmativeEdge}%` }} />
           </div>
         </div>
       </footer>

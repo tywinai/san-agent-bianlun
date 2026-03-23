@@ -150,24 +150,24 @@ class DebateService:
             b_system = (
                 "你是辩手B（正方），立场固定为支持辩题。"
                 "你必须使用与辩题相同的语言输出（本题为中文）。"
-                "要求：逻辑清晰、观点明确、针对对方观点反驳，每次120到220字。"
+                "要求：逻辑清晰、观点明确、针对对方观点反驳，每次约50词（可在45-60词浮动）。"
             )
             c_system = (
                 "你是辩手C（反方），立场固定为反对辩题。"
                 "你必须使用与辩题相同的语言输出（本题为中文）。"
-                "要求：逻辑清晰、观点明确、针对对方观点反驳，每次120到220字。"
+                "要求：逻辑清晰、观点明确、针对对方观点反驳，每次约50词（可在45-60词浮动）。"
             )
             judge_system = "你是严格的辩论裁判。你必须使用中文。"
         elif lang == "en":
             b_system = (
                 "You are Debater B (affirmative), and you must support the motion. "
                 "Important: output in English only, no Chinese. "
-                "Be clear, logical, and directly rebut the opponent. Keep each turn concise."
+                "Be clear, logical, and directly rebut the opponent. Keep each turn around 50 words (45-60 words)."
             )
             c_system = (
                 "You are Debater C (negative), and you must oppose the motion. "
                 "Important: output in English only, no Chinese. "
-                "Be clear, logical, and directly rebut the opponent. Keep each turn concise."
+                "Be clear, logical, and directly rebut the opponent. Keep each turn around 50 words (45-60 words)."
             )
             judge_system = "You are a strict debate judge. You must output in English."
         else:
@@ -190,14 +190,14 @@ class DebateService:
                     f"Topic: {topic}\n"
                     f"Round {i}. Speak as the affirmative side.\n"
                     f"Debate history:\n{history}\n"
-                    "Output only your turn content in English."
+                    "Output only your turn content in English. Target about 50 words (45-60 words)."
                 )
             else:
                 b_user = (
                     f"辩题：{topic}\n"
                     f"当前第{i}轮，请以正方身份发言。\n"
                     f"历史记录：\n{history}\n"
-                    "请直接输出本轮发言正文，并且必须与辩题语言一致。"
+                    "请直接输出本轮发言正文，并且必须与辩题语言一致；长度控制在约50词（45-60词）。"
                 )
             b_text_parts: List[str] = []
             async for chunk in self.client.chat_stream(
@@ -219,14 +219,14 @@ class DebateService:
                     f"Topic: {topic}\n"
                     f"Round {i}. Opponent (B) said:\n{b_text}\n"
                     f"Debate history:\n{history}\n"
-                    "Respond as the negative side and rebut B directly. Output only your turn content in English."
+                    "Respond as the negative side and rebut B directly. Output only your turn content in English. Target about 50 words (45-60 words)."
                 )
             else:
                 c_user = (
                     f"辩题：{topic}\n"
                     f"当前第{i}轮，对方（B）本轮发言如下：\n{b_text}\n"
                     f"历史记录：\n{history}\n"
-                    "请以反方身份给出本轮回应，并针对B观点反驳。仅输出发言正文，并且必须与辩题语言一致。"
+                    "请以反方身份给出本轮回应，并针对B观点反驳。仅输出发言正文，并且必须与辩题语言一致；长度控制在约50词（45-60词）。"
                 )
             c_text_parts: List[str] = []
             async for chunk in self.client.chat_stream(
@@ -400,7 +400,7 @@ class DebateService:
                 + ("\n".join([f"- {x}" for x in used_pros]) if used_pros else "- none")
                 + "\n"
                 f"Debate history:\n{history}\n"
-                "Task: Speak as affirmative in 70-120 English words. Use the core sentence bank naturally as evidence examples. "
+                "Task: Speak as affirmative in around 50 English words (45-60 words). Use the core sentence bank naturally as evidence examples. "
                 "Do not force a specific sentence each round. Avoid repeating the same sentence or claim wording from your previous rounds.\n"
                 f"Additional requirement: {pro_requirement}"
             )
@@ -445,7 +445,7 @@ class DebateService:
                 + ("\n".join([f"- {x}" for x in used_cons]) if used_cons else "- none")
                 + "\n"
                 f"Debate history:\n{history}\n"
-                "Task: Speak as negative in 70-120 English words. Rebut B and use the core sentence bank naturally as evidence examples. "
+                "Task: Speak as negative in around 50 English words (45-60 words). Rebut B and use the core sentence bank naturally as evidence examples. "
                 "Do not force a specific sentence each round. Avoid repeating the same sentence or claim wording from your previous rounds.\n"
                 f"Additional requirement: {con_requirement}"
             )
