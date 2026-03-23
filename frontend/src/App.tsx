@@ -72,7 +72,7 @@ function currentSentenceFromProgress(text: string, index: number): string {
     return "";
   }
   const i = Math.max(0, Math.min(index, source.length));
-  const boundary = /[。！？!?;；\n]/;
+  const boundary = /[。！？!?;；.\n]/;
 
   let start = 0;
   for (let p = i - 1; p >= 0; p -= 1) {
@@ -418,16 +418,34 @@ export default function App() {
   };
 
   const getFocusSubtitle = (speaker: "B" | "C") => {
-    if (
-      speakingSpeaker === speaker &&
-      karaoke.active &&
-      karaoke.sourceText &&
-      karaoke.segmentEnd !== undefined
-    ) {
-      const current = currentSentenceFromProgress(karaoke.sourceText, karaoke.segmentEnd).trim();
-      if (current) {
-        return current;
+    const opponent: "B" | "C" = speaker === "B" ? "C" : "B";
+
+    if (speakingSpeaker === speaker) {
+      if (karaoke.active && karaoke.sourceText && karaoke.segmentEnd !== undefined) {
+        const current = currentSentenceFromProgress(karaoke.sourceText, karaoke.segmentEnd).trim();
+        if (current) {
+          return current;
+        }
       }
+
+      const roundNo = activeRound ?? roundNumbers[roundNumbers.length - 1];
+      if (roundNo) {
+        const spokenNow = getRoundText(roundNo, speaker).trim();
+        if (spokenNow) {
+          const current = currentSentenceFromProgress(spokenNow, spokenNow.length).trim();
+          if (current) {
+            return current;
+          }
+        }
+      }
+    }
+
+    if (speakingSpeaker === opponent) {
+      return topicLang === "en" ? "Opponent is speaking..." : "对方陈述中...";
+    }
+
+    if (activeSpeaker === opponent && (statusKey === "thinking" || statusKey === "speaking" || loading)) {
+      return topicLang === "en" ? "Opponent is speaking..." : "对方陈述中...";
     }
 
     if (thinkingSpeaker === speaker) {
@@ -1090,7 +1108,7 @@ export default function App() {
               <div className={`liveDot ${speakingSpeaker === "C" ? "speaking" : thinkingSpeaker === "C" ? "thinking" : ""}`}>
                 {speakingSpeaker === "C" ? "speaking" : thinkingSpeaker === "C" ? "thinking" : "idle"}
               </div>
-              <p className="focusViewpoint">{sideViewpoints.c}</p>
+              <p className="focusSubtitle">{getFocusSubtitle("C")}</p>
               <div className="voiceWaves" aria-hidden="true">
                 <span />
                 <span />
@@ -1107,7 +1125,7 @@ export default function App() {
               <div className={`liveDot ${speakingSpeaker === "B" ? "speaking" : thinkingSpeaker === "B" ? "thinking" : ""}`}>
                 {speakingSpeaker === "B" ? "speaking" : thinkingSpeaker === "B" ? "thinking" : "idle"}
               </div>
-              <p className="focusViewpoint">{sideViewpoints.b}</p>
+              <p className="focusSubtitle">{getFocusSubtitle("B")}</p>
               <div className="voiceWaves" aria-hidden="true">
                 <span />
                 <span />
@@ -1241,7 +1259,7 @@ export default function App() {
           <div className="dockActionRow">
             <div className="roundBadge dockRoundBadge">{currentRoundLabel}</div>
             <button className="startButton dockStartButton" onClick={onSubmit} disabled={loading}>
-              {loading ? "辩论进行中（流式）..." : "开始辩论"}
+              {loading ? "辩论进行中（流式）..." : hasDebateStarted ? "重新开始辩论" : "开始辩论"}
             </button>
           </div>
           <div className="dockRow">

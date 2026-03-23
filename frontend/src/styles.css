@@ -269,9 +269,19 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 24px;
+  justify-content: flex-start;
+  padding: 48px 24px 24px;
   box-shadow: 0 16px 30px rgba(20, 36, 64, 0.12);
+}
+
+.focusCard.negativeFocus {
+  background: linear-gradient(180deg, rgba(255, 243, 243, 0.95), rgba(255, 250, 250, 0.98));
+  border-color: #f2d9dc;
+}
+
+.focusCard.affirmativeFocus {
+  background: linear-gradient(180deg, rgba(241, 247, 255, 0.95), rgba(248, 251, 255, 0.98));
+  border-color: #d6e2f5;
 }
 
 .focusAvatarWrap {
@@ -299,6 +309,7 @@ body {
   font-weight: 600;
   color: #20365d;
   max-width: 86%;
+  min-height: calc(1.55em * 3);
 }
 
 .focusViewpoint {
@@ -311,7 +322,7 @@ body {
 }
 
 .voiceWaves {
-  margin-top: 12px;
+  margin-top: auto;
   display: inline-flex;
   align-items: flex-end;
   gap: 4px;
@@ -327,11 +338,11 @@ body {
   opacity: 0.5;
 }
 
-.focusCard .liveDot:not(.speaking) + .focusViewpoint + .voiceWaves {
+.focusCard .liveDot:not(.speaking) + .focusSubtitle + .voiceWaves {
   opacity: 0.25;
 }
 
-.focusCard .liveDot:not(.speaking) + .focusViewpoint + .voiceWaves span {
+.focusCard .liveDot:not(.speaking) + .focusSubtitle + .voiceWaves span {
   animation-play-state: paused;
 }
 
@@ -357,6 +368,16 @@ body {
   flex-direction: column;
   overflow: hidden;
   box-shadow: 0 10px 26px rgba(21, 28, 44, 0.08);
+}
+
+.column.negative {
+  background: linear-gradient(180deg, rgba(255, 243, 243, 0.95), rgba(255, 250, 250, 0.98));
+  border-color: #f2d9dc;
+}
+
+.column.affirmative {
+  background: linear-gradient(180deg, rgba(241, 247, 255, 0.95), rgba(248, 251, 255, 0.98));
+  border-color: #d6e2f5;
 }
 
 .columnHeader {
